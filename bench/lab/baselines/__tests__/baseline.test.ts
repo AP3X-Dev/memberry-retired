@@ -10,16 +10,33 @@ import { loadAndVerifyBaseline, validateBaselineManifest, verifyBaselineCommands
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const BASELINE_PATH = resolve(HERE, '..', 'memberry-7a31231.json');
+const REPO_ROOT = resolve(HERE, '..', '..', '..', '..');
 
 test('the immutable baseline manifest is structurally valid and its git artifacts match', async () => {
   const manifest = JSON.parse(await readFile(BASELINE_PATH, 'utf8'));
   assert.deepEqual(validateBaselineManifest(manifest), []);
-  await assert.doesNotReject(verifyBaselineGitArtifacts(manifest, resolve(HERE, '..', '..', '..', '..')));
+  await assert.doesNotReject(verifyBaselineGitArtifacts(manifest, REPO_ROOT));
   await assert.doesNotReject(loadAndVerifyBaseline(
     BASELINE_PATH,
     resolve(HERE, '..', 'baseline.lock.json'),
-    resolve(HERE, '..', '..', '..', '..'),
+    REPO_ROOT,
   ));
+});
+
+test('CI jobs that verify immutable Git baselines fetch complete history', async () => {
+  const workflow = await readFile(resolve(REPO_ROOT, '.github', 'workflows', 'ci.yml'), 'utf8');
+  const gateJobs = workflow
+    .split(/\n(?= {2}[A-Za-z0-9_-]+:\s*\n)/)
+    .filter((block) => block.includes('run: npm run bench:lab:ci'));
+
+  assert.ok(gateJobs.length > 0, 'CI must execute the deterministic evaluation-lab gate');
+  for (const job of gateJobs) {
+    assert.match(
+      job,
+      /- uses: actions\/checkout@v4\s*\n\s+with:\s*\n(?:\s*#.*\n)*\s+fetch-depth:\s*0(?:\s|$)/,
+      'immutable baseline verification requires actions/checkout fetch-depth: 0',
+    );
+  }
 });
 
 test('quality comparison passes an identical candidate', async () => {
@@ -60,7 +77,7 @@ test('baseline verification rejects a recorded command that never existed', asyn
   const manifest = JSON.parse(await readFile(BASELINE_PATH, 'utf8'));
   manifest.commands = ['npm run bench:does-not-exist'];
   await assert.rejects(
-    verifyBaselineCommands(manifest, resolve(HERE, '..', '..', '..', '..')),
+    verifyBaselineCommands(manifest, REPO_ROOT),
     /nonexistent npm script/,
   );
 });
