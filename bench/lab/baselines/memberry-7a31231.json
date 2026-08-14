@@ -1,0 +1,78 @@
+{
+  "schemaVersion": 1,
+  "id": "memberry-7a31231",
+  "source": {
+    "repository": "AP3X-Dev/memberry",
+    "branch": "master",
+    "commit": "7a31231b1dcaa4e8e32d71ed987e22f36fdd0c75",
+    "dirty": false
+  },
+  "capturedAt": "2026-08-14T20:28:44.153Z",
+  "runtime": {
+    "node": ">=20",
+    "os": "portable",
+    "infrastructure": "none"
+  },
+  "seed": 0,
+  "configuration": {
+    "quality": "lexical + deterministic concept vectors + RRF + MMR",
+    "membench": "in-process proxy + BM25 + recency",
+    "network": false,
+    "credentials": false
+  },
+  "datasets": [
+    {
+      "id": "memberry-retrieval-golden",
+      "version": "1.0.0",
+      "split": "legacy-dev",
+      "sha256": "13ffe28b08ad9cd5634bff5605e6d7f7632aadacf0a50454e553ac2f0327b843"
+    },
+    {
+      "id": "memberry-membench-synthetic",
+      "version": "1.0.0",
+      "split": "legacy-dev",
+      "sha256": "f6534c2c9cd96914013256e00b573da7e15418a94000fd53b78919dacda4ee43"
+    }
+  ],
+  "gitArtifacts": [
+    { "path": "packages/retrieval/bench/quality-eval.ts", "hashMode": "text-lf", "sha256": "13ffe28b08ad9cd5634bff5605e6d7f7632aadacf0a50454e553ac2f0327b843" },
+    { "path": "bench/quality/eval.ts", "hashMode": "text-lf", "sha256": "8183d66eaa45f2703cdb86ce1105553eede8b64447060fbe3ec26974eef32b41" },
+    { "path": "bench/membench/scenarios.ts", "hashMode": "text-lf", "sha256": "f6534c2c9cd96914013256e00b573da7e15418a94000fd53b78919dacda4ee43" },
+    { "path": "bench/membench/adapters.ts", "hashMode": "text-lf", "sha256": "f937b71099ac17b423276b07bcb450592fddb0d73073a43661a5996b7b6ad246" },
+    { "path": "bench/membench/scorer.ts", "hashMode": "text-lf", "sha256": "57bd73e8bcd0b82fb1138cc5971eba17c506a0bbad219a6d7e8638dc41b2ea67" },
+    { "path": "bench/membench/run.ts", "hashMode": "text-lf", "sha256": "59e9e671b7133c95aefe5c19fb896649b3e69285e35dc17ab8e45eb422f6fa94" }
+  ],
+  "commands": [
+    "npm run bench:quality",
+    "npx --no-install tsx bench/membench/run.ts",
+    "npx --no-install tsx packages/retrieval/bench/benchmark.ts"
+  ],
+  "results": {
+    "quality": {
+      "corpusSize": 41,
+      "queryCount": 12,
+      "metrics": {
+        "recallAt5": 0.8819444444444445,
+        "recallAt10": 0.9305555555555557,
+        "precisionAt5": 0.39999999999999997,
+        "ndcgAt10": 0.8469304258967155,
+        "mrr": 0.9027777777777777,
+        "intentAccuracy": 1,
+        "currentAboveStaleRate": 1,
+        "staleLeakRate": 0,
+        "lexRecallAt10": 0.8402777777777777,
+        "denseRecallAt10": 0.9166666666666666
+      }
+    },
+    "membench": {
+      "scenarioCount": 7,
+      "itemCount": 39,
+      "probeCount": 13,
+      "composite": {
+        "memberryProxy": 1,
+        "bm25": 0.683,
+        "naiveRecency": 0.367
+      }
+    }
+  }
+}

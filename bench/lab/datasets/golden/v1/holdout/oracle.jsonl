@@ -1,0 +1,1 @@
+{"version":"1.0.0","scenarioId":"golden-holdout-isolation-v1","probes":[{"probeId":"holdout-query-001","relevant":["holdout-a"],"required":["holdout-a"],"forbidden":["holdout-b"]}]}

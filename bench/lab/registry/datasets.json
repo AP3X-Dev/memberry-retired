@@ -1,0 +1,139 @@
+{
+  "schemaVersion": 1,
+  "datasets": [
+    {
+      "id": "memberry-lab-golden-dev",
+      "version": "1.0.0",
+      "kind": "repository",
+      "split": "dev",
+      "oracleAccess": "scorer-only",
+      "requiredInCi": true,
+      "source": { "url": null, "revision": "1.0.0", "path": "bench/lab/datasets/golden/v1/dev" },
+      "license": { "status": "internal", "spdx": null, "url": null, "usage": "repository-tests-only" },
+      "dataPolicy": {
+        "reviewStatus": "verified",
+        "containsPersonalData": false,
+        "containsSecrets": false,
+        "containsCustomerData": false,
+        "exclusions": ["real user memory", "credentials", "private customer data"]
+      },
+      "acquisition": { "status": "bundled" },
+      "artifacts": [
+        { "role": "input", "access": "adapter", "fileName": "input.jsonl", "repositoryPath": "bench/lab/datasets/golden/v1/dev/input.jsonl", "hashMode": "text-lf", "sha256": "5f76094e7021637da6963b98e18f497d9a625bac9d25d6ac835f1e99adc6a0d4", "sizeBytes": 859 },
+        { "role": "oracle", "access": "scorer", "fileName": "oracle.jsonl", "repositoryPath": "bench/lab/datasets/golden/v1/dev/oracle.jsonl", "hashMode": "text-lf", "sha256": "09e81260b2fd4aa8087e3021ade21e80b29c5f17b8c030d9b27ca607c91e2e8b", "sizeBytes": 169 }
+      ]
+    },
+    {
+      "id": "memberry-lab-golden-holdout",
+      "version": "1.0.0",
+      "kind": "repository",
+      "split": "holdout",
+      "oracleAccess": "scorer-only",
+      "requiredInCi": true,
+      "source": { "url": null, "revision": "1.0.0", "path": "bench/lab/datasets/golden/v1/holdout" },
+      "license": { "status": "internal", "spdx": null, "url": null, "usage": "repository-tests-only" },
+      "dataPolicy": {
+        "reviewStatus": "verified",
+        "containsPersonalData": false,
+        "containsSecrets": false,
+        "containsCustomerData": false,
+        "exclusions": ["real user memory", "credentials", "private customer data"]
+      },
+      "acquisition": { "status": "bundled" },
+      "artifacts": [
+        { "role": "input", "access": "adapter", "fileName": "input.jsonl", "repositoryPath": "bench/lab/datasets/golden/v1/holdout/input.jsonl", "hashMode": "text-lf", "sha256": "3b8197347de571ea90885462a4c2264a4e101938dd8222c85bc29879a71183d6", "sizeBytes": 1049 },
+        { "role": "oracle", "access": "scorer", "fileName": "oracle.jsonl", "repositoryPath": "bench/lab/datasets/golden/v1/holdout/oracle.jsonl", "hashMode": "text-lf", "sha256": "5d659554013e2da7dc157d8631f27237e3ed9151606e045f9dfe18fbde25f8bb", "sizeBytes": 182 }
+      ]
+    },
+    {
+      "id": "memberry-lab-migrated-retrieval",
+      "version": "1.0.0",
+      "kind": "repository",
+      "split": "dev+holdout",
+      "oracleAccess": "scorer-only",
+      "requiredInCi": false,
+      "source": { "url": null, "revision": "1.0.0", "path": "bench/lab/fixtures/retrieval" },
+      "license": { "status": "internal", "spdx": null, "url": null, "usage": "repository-tests-only" },
+      "dataPolicy": {
+        "reviewStatus": "verified",
+        "containsPersonalData": false,
+        "containsSecrets": false,
+        "containsCustomerData": false,
+        "exclusions": ["real user memory", "credentials", "private customer data"]
+      },
+      "acquisition": { "status": "bundled" },
+      "artifacts": [
+        { "role": "input", "access": "adapter", "fileName": "retrieval-inputs.ts", "repositoryPath": "bench/lab/fixtures/retrieval-inputs.ts", "hashMode": "text-lf", "sha256": "06b65c9cb51215372543f8ae1f224533da386e004909f68f67cb1128633985da", "sizeBytes": 8952 },
+        { "role": "oracle", "access": "scorer", "fileName": "retrieval-oracles.ts", "repositoryPath": "bench/lab/fixtures/retrieval-oracles.ts", "hashMode": "text-lf", "sha256": "e8836b50e96c0e6e2bc3ed099fc35650ff974cf9934a5ed2f4e5b43fe4546f2b", "sizeBytes": 2247 }
+      ]
+    },
+    {
+      "id": "memberry-lab-temporal-isolation",
+      "version": "1.0.0",
+      "kind": "repository",
+      "split": "dev+holdout",
+      "oracleAccess": "scorer-only",
+      "requiredInCi": false,
+      "source": { "url": null, "revision": "1.0.0", "path": "bench/lab/fixtures/temporal-isolation" },
+      "license": { "status": "internal", "spdx": null, "url": null, "usage": "repository-tests-only" },
+      "dataPolicy": {
+        "reviewStatus": "verified",
+        "containsPersonalData": false,
+        "containsSecrets": false,
+        "containsCustomerData": false,
+        "exclusions": ["real user memory", "credentials", "private customer data"]
+      },
+      "acquisition": { "status": "bundled" },
+      "artifacts": [
+        { "role": "input", "access": "adapter", "fileName": "temporal-isolation-inputs.ts", "repositoryPath": "bench/lab/fixtures/temporal-isolation-inputs.ts", "hashMode": "text-lf", "sha256": "096a3b48f11ee45bdb7e74127e5fc61cc3da6b3f08a322773c0255d45c42cc16", "sizeBytes": 4285 },
+        { "role": "oracle", "access": "scorer", "fileName": "temporal-isolation-oracles.ts", "repositoryPath": "bench/lab/fixtures/temporal-isolation-oracles.ts", "hashMode": "text-lf", "sha256": "9e524e69811aba54594088269d43c5ec8a99731b2714c6ed304bb1679d16f0a7", "sizeBytes": 1307 }
+      ]
+    },
+    {
+      "id": "longmemeval-s-cleaned",
+      "version": "2025-cleaned-unpinned",
+      "kind": "external",
+      "split": "external",
+      "oracleAccess": "source-defined",
+      "requiredInCi": false,
+      "source": {
+        "url": "https://huggingface.co/datasets/xiaowu0162/longmemeval-cleaned/resolve/main/longmemeval_s_cleaned.json",
+        "revision": null,
+        "upstream": "https://github.com/xiaowu0162/LongMemEval"
+      },
+      "license": { "status": "verified", "spdx": "MIT", "url": "https://github.com/xiaowu0162/LongMemEval/blob/main/LICENSE", "usage": "license-terms-apply" },
+      "dataPolicy": {
+        "reviewStatus": "unverified",
+        "containsPersonalData": null,
+        "containsSecrets": null,
+        "containsCustomerData": null,
+        "exclusions": ["unreviewed external content is excluded from CI and product data"]
+      },
+      "acquisition": { "status": "blocked", "reason": "Resolve an immutable upstream revision, review data exclusions, and verify the downloaded bytes with SHA-256 before enabling." },
+      "artifacts": [
+        { "role": "source-defined", "access": "scorer", "fileName": "longmemeval_s_cleaned.json", "repositoryPath": null, "hashMode": "bytes", "sha256": null, "sizeBytes": 277383467 }
+      ]
+    },
+    {
+      "id": "locomo10",
+      "version": "unversioned",
+      "kind": "external",
+      "split": "external",
+      "oracleAccess": "source-defined",
+      "requiredInCi": false,
+      "source": { "url": "https://github.com/snap-research/locomo/blob/main/data/locomo10.json", "revision": null, "upstream": "https://github.com/snap-research/locomo" },
+      "license": { "status": "verified", "spdx": "CC-BY-NC-4.0", "url": "https://github.com/snap-research/locomo/blob/main/LICENSE", "usage": "non-commercial-only" },
+      "dataPolicy": {
+        "reviewStatus": "unverified",
+        "containsPersonalData": null,
+        "containsSecrets": null,
+        "containsCustomerData": null,
+        "exclusions": ["restricted and unreviewed external content is excluded from CI and product data"]
+      },
+      "acquisition": { "status": "blocked", "reason": "Non-commercial license requires explicit approval; immutable revision, data review, and SHA-256 are also unresolved." },
+      "artifacts": [
+        { "role": "source-defined", "access": "scorer", "fileName": "locomo10.json", "repositoryPath": null, "hashMode": "bytes", "sha256": null, "sizeBytes": null }
+      ]
+    }
+  ]
+}

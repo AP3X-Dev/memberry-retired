@@ -5,6 +5,22 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- Versioned evaluation lab with immutable baseline manifests, hidden dev/holdout
+  oracles, anti-gaming metrics, explicit fixture/proxy/live evidence, deterministic
+  comparison gates, and atomic run artifacts.
+- Fail-closed external dataset registry and acquisition workflow with license,
+  privacy, revision, size, and SHA-256 requirements.
+- Opt-in live MCP evaluation adapter and disposable Redis/Neo4j integration smoke.
+
+### Removed
+
+- Superseded MemBench and hard-coded LongMemEval prototype runners. Their control
+  bytes and metrics remain reproducible from the immutable baseline commit.
+
 ## [0.1.0] - 2026-06-07
 
 First tagged release. MemBerry is a persistent, cross-session memory system for AI

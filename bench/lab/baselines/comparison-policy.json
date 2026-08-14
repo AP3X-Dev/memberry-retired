@@ -1,0 +1,16 @@
+{
+  "schemaVersion": 1,
+  "baseline": "memberry-7a31231",
+  "requireCandidatePass": true,
+  "requireSameCorpus": true,
+  "rules": [
+    { "metric": "recallAt5", "direction": "higher", "allowedRegression": 0 },
+    { "metric": "recallAt10", "direction": "higher", "allowedRegression": 0 },
+    { "metric": "precisionAt5", "direction": "higher", "allowedRegression": 0 },
+    { "metric": "ndcgAt10", "direction": "higher", "allowedRegression": 0 },
+    { "metric": "mrr", "direction": "higher", "allowedRegression": 0 },
+    { "metric": "intentAccuracy", "direction": "higher", "allowedRegression": 0 },
+    { "metric": "currentAboveStaleRate", "direction": "higher", "allowedRegression": 0, "hardGate": true },
+    { "metric": "staleLeakRate", "direction": "lower", "allowedRegression": 0, "hardGate": true }
+  ]
+}

@@ -38,11 +38,12 @@ jobs:
           REDIS_URL: ""
           NEO4J_URI: ""
 
-      # Memory-quality gate: deterministic Recall@k / MRR / nDCG@k over a committed golden
-      # set, using the lexical + RRF + MMR ranking path only (no embeddings, no live
-      # Neo4j/Redis). Exits non-zero on any threshold regression. See bench/quality/.
-      - name: Memory-quality gate (Recall/MRR/nDCG)
-        run: npm run bench:quality
+      # Required deterministic lab gate: validates the pinned registries and immutable
+      # baseline, runs the legacy quality control, then compares the proxy candidate
+      # against the independent control over physically separated dev/holdout oracles.
+      # It is deliberately offline; external datasets and live adapters run separately.
+      - name: Evaluation-lab deterministic gate
+        run: npm run bench:lab:ci
         env:
           REDIS_URL: ""
           NEO4J_URI: ""
@@ -99,3 +100,79 @@ jobs:
           NEO4J_URI: bolt://localhost:7687
           NEO4J_USER: neo4j
           NEO4J_PASSWORD: testpassword
+
+      # Production-path proof for the lab adapter. This starts the real MCP
+      # composition root against disposable service containers and writes then
+      # exact-verifies one uniquely scoped synthetic fixture under the default
+      # test tenant. Scored live evaluation remains a separate berry_load path.
+      - name: Evaluation-lab live MCP smoke
+        shell: bash
+        env:
+          REDIS_URL: redis://localhost:6379
+          NEO4J_URI: bolt://localhost:7687
+          NEO4J_USER: neo4j
+          NEO4J_PASSWORD: testpassword
+          MEMBERRY_API_TOKEN: lab-test-token
+          MEMBERRY_CONSOLIDATION_ENABLED: "false"
+          MEMBERRY_WIKI_AUTOREFRESH: "false"
+          MEMBERRY_LAB_TENANT_ID: default
+          MEMBERRY_LAB_API_TOKEN: lab-test-token
+          MEMBERRY_LAB_MCP_URL: http://127.0.0.1:3101
+          MEMBERRY_LAB_ALLOW_WRITES: "true"
+        run: |
+          set -euo pipefail
+          evidence_dir="${RUNNER_TEMP}/memberry-live-evidence"
+          server_log="${RUNNER_TEMP}/memberry-mcp.log"
+          mkdir -p "$evidence_dir"
+          sanitize() {
+            sed -E \
+              -e 's/(Bearer )[A-Za-z0-9._~+\/-]+/\1[REDACTED]/g' \
+              -e 's/lab-test-token/[REDACTED]/g' \
+              -e 's/testpassword/[REDACTED]/g'
+          }
+          npm start >"$server_log" 2>&1 &
+          server_pid=$!
+          trap 'kill "$server_pid" 2>/dev/null || true' EXIT
+          for attempt in $(seq 1 60); do
+            if curl --fail --silent http://127.0.0.1:3101/healthz >/dev/null; then
+              break
+            fi
+            if ! kill -0 "$server_pid" 2>/dev/null; then
+              sanitize <"$server_log" | tee "$evidence_dir/server.log" >&2
+              exit 1
+            fi
+            sleep 1
+          done
+          curl --fail --silent http://127.0.0.1:3101/healthz >/dev/null || {
+            sanitize <"$server_log" | tee "$evidence_dir/server.log" >&2
+            exit 1
+          }
+          npm run bench:lab:live 2>&1 | sanitize | tee "$evidence_dir/smoke.log"
+
+      - name: Sanitize live MCP server evidence
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          evidence_dir="${RUNNER_TEMP}/memberry-live-evidence"
+          server_log="${RUNNER_TEMP}/memberry-mcp.log"
+          mkdir -p "$evidence_dir"
+          if [[ -f "$server_log" ]]; then
+            sed -E \
+              -e 's/(Bearer )[A-Za-z0-9._~+\/-]+/\1[REDACTED]/g' \
+              -e 's/lab-test-token/[REDACTED]/g' \
+              -e 's/testpassword/[REDACTED]/g' \
+              "$server_log" >"$evidence_dir/server.log"
+          fi
+          printf '{"repository":"%s","sha":"%s","run_id":"%s","run_attempt":"%s"}\n' \
+            "$GITHUB_REPOSITORY" "$GITHUB_SHA" "$GITHUB_RUN_ID" "$GITHUB_RUN_ATTEMPT" \
+            >"$evidence_dir/metadata.json"
+
+      - name: Upload live evaluation evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: memberry-live-evidence-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/memberry-live-evidence
+          if-no-files-found: error
+          retention-days: 14

@@ -1,0 +1,21 @@
+{
+  "schemaVersion": 1,
+  "experiments": [
+    {
+      "id": "evaluation-lab-candidate",
+      "owner": "retrieval-engine",
+      "flag": "MEMBERRY_LAB_CANDIDATE",
+      "defaultEnabled": false,
+      "control": "scope-aware-bm25-control-v1",
+      "rollback": "Unset MEMBERRY_LAB_CANDIDATE and run the control adapter. No production behavior is changed."
+    },
+    {
+      "id": "memberry-live-evaluation",
+      "owner": "memory-core",
+      "flag": "MEMBERRY_LAB_LIVE",
+      "defaultEnabled": false,
+      "control": "memberry-proxy-v1",
+      "rollback": "Unset MEMBERRY_LAB_LIVE and retain the isolated synthetic scope for audit. Any later tenant-scoped maintenance requires separate authorization."
+    }
+  ]
+}

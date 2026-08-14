@@ -1,0 +1,50 @@
+{
+  "schemaVersion": 1,
+  "systems": [
+    {
+      "id": "memberry-proxy-v1",
+      "displayName": "MemBerry proxy candidate",
+      "mode": "fixture",
+      "fidelity": "proxy",
+      "requiredInCi": true,
+      "adapter": "bench/lab/adapters/memberry-proxy.ts",
+      "capabilities": ["namespaces", "feedback", "stats", "cleanup", "project-scope", "tenant-scope", "temporal-filtering"]
+    },
+    {
+      "id": "scope-aware-bm25-control-v1",
+      "displayName": "Scope-aware BM25 control",
+      "mode": "fixture",
+      "fidelity": "fixture",
+      "requiredInCi": true,
+      "adapter": "bench/lab/adapters/baselines.ts",
+      "capabilities": ["namespaces", "feedback", "stats", "cleanup", "project-scope", "tenant-scope", "temporal-filtering"]
+    },
+    {
+      "id": "bm25-baseline-v1",
+      "displayName": "Keyword/BM25 baseline",
+      "mode": "fixture",
+      "fidelity": "fixture",
+      "requiredInCi": true,
+      "adapter": "bench/lab/adapters/baselines.ts",
+      "capabilities": ["namespaces", "feedback", "stats", "cleanup"]
+    },
+    {
+      "id": "recency-baseline-v1",
+      "displayName": "Recency baseline",
+      "mode": "fixture",
+      "fidelity": "fixture",
+      "requiredInCi": true,
+      "adapter": "bench/lab/adapters/baselines.ts",
+      "capabilities": ["namespaces", "feedback", "stats", "cleanup"]
+    },
+    {
+      "id": "memberry-live-mcp",
+      "displayName": "MemBerry live MCP",
+      "mode": "live",
+      "fidelity": "live",
+      "requiredInCi": false,
+      "adapter": "bench/lab/adapters/memberry-live.ts",
+      "capabilities": ["namespaces", "project-scope"]
+    }
+  ]
+}

@@ -25,6 +25,15 @@
     "stack:down": "docker compose --profile app down",
     "stack:logs": "docker compose --profile app logs -f mcp",
     "bench:quality": "tsx bench/quality/eval.ts",
+    "bench:performance": "tsx packages/retrieval/bench/benchmark.ts",
+    "bench:lab": "tsx bench/lab/cli.ts",
+    "bench:lab:test": "vitest run bench/lab",
+    "bench:lab:typecheck": "tsc --noEmit --strict --target ES2022 --module Node16 --moduleResolution Node16 --esModuleInterop --skipLibCheck bench/lab/index.ts bench/lab/cli.ts bench/lab/live-smoke.ts",
+    "bench:lab:validate": "tsx bench/lab/registry/validate.ts",
+    "bench:lab:baseline:verify": "tsx bench/lab/baselines/verify.ts",
+    "bench:lab:dataset:acquire": "tsx bench/lab/datasets/acquire.ts",
+    "bench:lab:ci": "tsx bench/lab/baselines/ci-gate.ts",
+    "bench:lab:live": "tsx bench/lab/live-smoke.ts",
     "validate:memberry-guidance": "node skills/memberry/scripts/validate-source-guidance.mjs && node skills/memberry/scripts/validate-project-config.mjs .cursorrules"
   },
   "engines": {

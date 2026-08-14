@@ -323,6 +323,25 @@ Deliberately unsafe knowledge
 changes—corrections, contradictions, supersedes, and decay—stay in the review
 queue rather than silently rewriting durable memory.
 
+## Evaluation Lab
+
+The versioned evaluation lab freezes the pre-lab control, separates adapter inputs
+from scorer-only oracles, and gates retrieval, temporal correctness, stale safety,
+project isolation, and tenant isolation. Fast proxy results are labeled as proxy
+evidence; the integration job separately exercises the live MCP composition root
+against disposable Redis and Neo4j services.
+
+```bash
+npm run bench:lab                 # protected control/candidate comparison
+npm run bench:lab:test            # contracts, metrics, adapters, data and gates
+npm run bench:lab:ci              # immutable baseline + mandatory PR gates
+npm run bench:lab:baseline:verify # verify baseline Git blobs and canonical lock
+```
+
+External datasets are registry-managed and fail closed on unknown licenses, missing
+hashes, or unreviewed data. Live writes require explicit disposable-lab settings and
+never perform a broad memory reset. See [bench/lab/README.md](bench/lab/README.md).
+
 ## Development
 
 ```bash

@@ -1,0 +1,1 @@
+{"version":"1.0.0","scenarioId":"golden-dev-update-v1","probes":[{"probeId":"dev-query-001","relevant":["dev-current"],"required":["dev-current"],"stale":["dev-old"]}]}

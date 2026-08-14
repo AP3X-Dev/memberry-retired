@@ -1,0 +1,15 @@
+{
+  "schemaVersion": 1,
+  "metrics": [
+    { "id": "recallAt5", "label": "Recall@5", "direction": "higher", "unit": "ratio", "requiredInCi": true, "hardGate": false },
+    { "id": "recallAt10", "label": "Recall@10", "direction": "higher", "unit": "ratio", "requiredInCi": true, "hardGate": false },
+    { "id": "precisionAt5", "label": "Precision@5", "direction": "higher", "unit": "ratio", "requiredInCi": true, "hardGate": false },
+    { "id": "ndcgAt10", "label": "nDCG@10", "direction": "higher", "unit": "ratio", "requiredInCi": true, "hardGate": false },
+    { "id": "mrr", "label": "Mean reciprocal rank", "direction": "higher", "unit": "ratio", "requiredInCi": true, "hardGate": false },
+    { "id": "intentAccuracy", "label": "Intent accuracy", "direction": "higher", "unit": "ratio", "requiredInCi": true, "hardGate": false },
+    { "id": "currentAboveStaleRate", "label": "Current fact above stale fact", "direction": "higher", "unit": "ratio", "requiredInCi": true, "hardGate": true },
+    { "id": "staleLeakRate", "label": "Stale leak rate", "direction": "lower", "unit": "ratio", "requiredInCi": true, "hardGate": true },
+    { "id": "projectContaminationRate", "label": "Cross-project contamination", "direction": "lower", "unit": "ratio", "requiredInCi": false, "hardGate": true },
+    { "id": "tenantContaminationRate", "label": "Cross-tenant contamination", "direction": "lower", "unit": "ratio", "requiredInCi": false, "hardGate": true }
+  ]
+}

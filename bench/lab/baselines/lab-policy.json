@@ -1,0 +1,33 @@
+{
+  "schemaVersion": 1,
+  "registeredGolden": {
+    "minRecallAtK": 1,
+    "minPrecisionAtK": 0.5,
+    "minAnswerCoverage": 1,
+    "maxStaleLeakRate": 0,
+    "maxIsolationLeakRate": 0,
+    "maxDuplicateRate": 0,
+    "maxUnknownResultRate": 0,
+    "maxQualityRegression": 0
+  },
+  "protectedTemporalIsolation": {
+    "minRecallAtK": 1,
+    "minPrecisionAtK": 0.75,
+    "minAnswerCoverage": 1,
+    "maxStaleLeakRate": 0,
+    "maxIsolationLeakRate": 0,
+    "maxDuplicateRate": 0,
+    "maxUnknownResultRate": 0,
+    "maxQualityRegression": 0
+  },
+  "migratedRetrievalControl": {
+    "minRecallAtK": 0.8461538461538461,
+    "minPrecisionAtK": 0.5512820512820512,
+    "minAnswerCoverage": 0.8461538461538461,
+    "maxStaleLeakRate": 0,
+    "maxIsolationLeakRate": 0,
+    "maxDuplicateRate": 0,
+    "maxUnknownResultRate": 0,
+    "maxQualityRegression": 0
+  }
+}
