@@ -39,4 +39,14 @@ describe('MEM-001C composition and shutdown wiring', () => {
     expect(source).toContain('registerAdmissionShadowStatusSources([');
     expect(source).not.toContain('registerAdmissionShadowStatusSource(core.admissionShadow)');
   });
+
+  it('bounds cold Neo4j setup and cleanup with explicit live-hook timeouts', () => {
+    const source = readFileSync(
+      resolve(REPO_ROOT, 'packages/core/src/__tests__/admission-shadow.live.test.ts'),
+      'utf8',
+    );
+    expect(source).toContain('const COLD_NEO4J_HOOK_TIMEOUT_MS = 120_000;');
+    expect(source).toContain('}, COLD_NEO4J_HOOK_TIMEOUT_MS);');
+    expect(source.match(/}, COLD_NEO4J_HOOK_TIMEOUT_MS\);/g)).toHaveLength(2);
+  });
 });

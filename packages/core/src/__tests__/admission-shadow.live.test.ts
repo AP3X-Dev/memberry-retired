@@ -15,6 +15,7 @@ import type { AMPConfig } from '../types.js';
 
 const LIVE = process.env.MEMBERRY_NEO4J_INTEGRATION === '1';
 const describeLive = LIVE ? describe : describe.skip;
+const COLD_NEO4J_HOOK_TIMEOUT_MS = 120_000;
 const suffix = randomUUID().toLowerCase();
 const tenantId = `test-admission-c-${suffix}`;
 const projectScope = `project:test-admission-c-${suffix}`;
@@ -95,12 +96,12 @@ describeLive('MEM-001C live shadow wiring', () => {
   beforeAll(async () => {
     await driver.getServerInfo();
     await runMigrations(driver);
-  });
+  }, COLD_NEO4J_HOOK_TIMEOUT_MS);
 
   afterAll(async () => {
     if (LIVE) await new TenantAdmin(driver).delete(tenantId);
     await driver.close().catch(() => undefined);
-  });
+  }, COLD_NEO4J_HOOK_TIMEOUT_MS);
 
   it('observes only successful nonduplicates and keeps disabled/failed stores unobserved', async () => {
     const input = (content: string) => ({
