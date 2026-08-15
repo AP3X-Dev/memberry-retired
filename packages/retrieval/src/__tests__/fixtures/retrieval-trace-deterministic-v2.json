@@ -1,0 +1,274 @@
+{
+  "schemaVersion": "1.0.0",
+  "algorithmVersion": "deterministic-v2",
+  "requestShape": {
+    "sources": {
+      "code": false,
+      "architecture": true,
+      "memory": true
+    },
+    "projectScopeApplied": true,
+    "tenantScope": "default",
+    "entityScope": "few",
+    "tagScope": "none",
+    "temporalFilterApplied": false,
+    "queryLength": "medium",
+    "queryForm": "identifier-heavy",
+    "tokenBudget": "large",
+    "diversification": "none",
+    "plannedChannels": [
+      "arch.fulltext",
+      "arch.hierarchy",
+      "arch.entity",
+      "arch.dependency",
+      "arch.aspect",
+      "memory.graph"
+    ]
+  },
+  "complete": true,
+  "incompleteReasons": [],
+  "candidates": [
+    {
+      "ref": "c0001",
+      "sourceType": "arch_entity",
+      "channels": [
+        {
+          "channel": "arch.hierarchy",
+          "rank": 1
+        }
+      ],
+      "evidence": {},
+      "estimatedTokens": 40
+    },
+    {
+      "ref": "c0002",
+      "sourceType": "arch_entity",
+      "channels": [
+        {
+          "channel": "arch.entity",
+          "rank": 1
+        }
+      ],
+      "evidence": {},
+      "estimatedTokens": 40
+    },
+    {
+      "ref": "c0003",
+      "sourceType": "arch_entity",
+      "channels": [
+        {
+          "channel": "arch.dependency",
+          "rank": 1
+        }
+      ],
+      "evidence": {},
+      "estimatedTokens": 40
+    },
+    {
+      "ref": "c0004",
+      "sourceType": "aspect",
+      "channels": [
+        {
+          "channel": "arch.aspect",
+          "rank": 1
+        }
+      ],
+      "evidence": {},
+      "estimatedTokens": 40
+    },
+    {
+      "ref": "c0005",
+      "sourceType": "semantic",
+      "channels": [
+        {
+          "channel": "memory.graph",
+          "rank": 1
+        }
+      ],
+      "evidence": {
+        "confidence": 0.8
+      },
+      "estimatedTokens": 90
+    }
+  ],
+  "events": [
+    {
+      "sequence": 1,
+      "kind": "channel-attempt",
+      "channel": "arch.fulltext"
+    },
+    {
+      "sequence": 2,
+      "kind": "channel-attempt",
+      "channel": "arch.hierarchy"
+    },
+    {
+      "sequence": 3,
+      "kind": "channel-attempt",
+      "channel": "arch.entity"
+    },
+    {
+      "sequence": 4,
+      "kind": "channel-attempt",
+      "channel": "arch.dependency"
+    },
+    {
+      "sequence": 5,
+      "kind": "channel-attempt",
+      "channel": "arch.aspect"
+    },
+    {
+      "sequence": 6,
+      "kind": "channel-attempt",
+      "channel": "memory.graph"
+    },
+    {
+      "sequence": 7,
+      "kind": "channel-terminal",
+      "channel": "arch.fulltext",
+      "outcome": "success"
+    },
+    {
+      "sequence": 8,
+      "kind": "channel-terminal",
+      "channel": "arch.hierarchy",
+      "outcome": "success"
+    },
+    {
+      "sequence": 9,
+      "kind": "channel-terminal",
+      "channel": "arch.entity",
+      "outcome": "success"
+    },
+    {
+      "sequence": 10,
+      "kind": "channel-terminal",
+      "channel": "arch.dependency",
+      "outcome": "success"
+    },
+    {
+      "sequence": 11,
+      "kind": "channel-terminal",
+      "channel": "arch.aspect",
+      "outcome": "success"
+    },
+    {
+      "sequence": 12,
+      "kind": "channel-terminal",
+      "channel": "memory.graph",
+      "outcome": "success"
+    },
+    {
+      "sequence": 13,
+      "kind": "candidate-filter",
+      "ref": "c0001",
+      "name": "token-budget",
+      "outcome": "pass"
+    },
+    {
+      "sequence": 14,
+      "kind": "candidate-filter",
+      "ref": "c0002",
+      "name": "token-budget",
+      "outcome": "pass"
+    },
+    {
+      "sequence": 15,
+      "kind": "candidate-filter",
+      "ref": "c0003",
+      "name": "token-budget",
+      "outcome": "fail"
+    },
+    {
+      "sequence": 16,
+      "kind": "candidate-filter",
+      "ref": "c0004",
+      "name": "token-budget",
+      "outcome": "pass"
+    },
+    {
+      "sequence": 17,
+      "kind": "candidate-filter",
+      "ref": "c0005",
+      "name": "token-budget",
+      "outcome": "pass"
+    },
+    {
+      "sequence": 18,
+      "kind": "deterministic-output",
+      "ref": "c0001",
+      "rank": 1
+    },
+    {
+      "sequence": 19,
+      "kind": "deterministic-output",
+      "ref": "c0002",
+      "rank": 2
+    },
+    {
+      "sequence": 20,
+      "kind": "deterministic-output",
+      "ref": "c0004",
+      "rank": 3
+    },
+    {
+      "sequence": 21,
+      "kind": "deterministic-output",
+      "ref": "c0005",
+      "rank": 4
+    },
+    {
+      "sequence": 22,
+      "kind": "candidate-terminal",
+      "ref": "c0001",
+      "outcome": "included",
+      "reasons": []
+    },
+    {
+      "sequence": 23,
+      "kind": "candidate-terminal",
+      "ref": "c0002",
+      "outcome": "included",
+      "reasons": []
+    },
+    {
+      "sequence": 24,
+      "kind": "candidate-terminal",
+      "ref": "c0003",
+      "outcome": "excluded",
+      "reasons": [
+        "token-budget"
+      ]
+    },
+    {
+      "sequence": 25,
+      "kind": "candidate-terminal",
+      "ref": "c0004",
+      "outcome": "included",
+      "reasons": []
+    },
+    {
+      "sequence": 26,
+      "kind": "candidate-terminal",
+      "ref": "c0005",
+      "outcome": "included",
+      "reasons": []
+    }
+  ],
+  "resultOrder": [
+    "c0001",
+    "c0002",
+    "c0004",
+    "c0005"
+  ],
+  "terminalExclusions": [
+    {
+      "ref": "c0003",
+      "outcome": "excluded",
+      "reasons": [
+        "token-budget"
+      ]
+    }
+  ],
+  "replayStateDigest": "sha256:744c26c828a761ab7568163662131d5674802341783d2687539c05f8110a2c2d"
+}

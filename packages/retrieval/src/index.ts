@@ -50,6 +50,7 @@ export type { AssemblerCodeLayer, AssemblerMemoryLayer, TracedUnifiedContext } f
 export {
   RETRIEVAL_TRACE_VERSION,
   RETRIEVAL_TRACE_NUMBER_DECIMALS,
+  RETRIEVAL_TRACE_DETERMINISTIC_OUTPUT_CHANNEL_ORDER_V2,
   RetrievalTraceCollector,
   RetrievalTraceValidationError,
   RetrievalTraceLimitError,
@@ -65,6 +66,7 @@ export type {
   RetrievalTraceAlgorithmVersion,
   RetrievalTraceSourceType,
   RetrievalTraceChannel,
+  RetrievalTraceDeterministicOutputChannelV2,
   RetrievalTraceFilterName,
   RetrievalTraceExclusionReason,
   RetrievalTraceFailureStage,

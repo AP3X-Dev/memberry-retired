@@ -1,7 +1,10 @@
+import { readFileSync } from 'node:fs';
+
 import { describe, expect, it } from 'vitest';
 
 import {
   RETRIEVAL_TRACE_VERSION,
+  RETRIEVAL_TRACE_DETERMINISTIC_OUTPUT_CHANNEL_ORDER_V2,
   RetrievalTraceCollector,
   RetrievalTraceLimitError,
   RetrievalTraceValidationError,
@@ -16,6 +19,11 @@ import {
   type RetrievalTraceCandidateHandle,
   type RetrievalTraceRequestShapeV1,
 } from '../trace.js';
+
+const deterministicV2Fixture = JSON.parse(readFileSync(
+  new URL('./fixtures/retrieval-trace-deterministic-v2.json', import.meta.url),
+  'utf8',
+)) as unknown;
 
 const rankedRequest: RetrievalTraceRequestShapeV1 = {
   sources: { code: true, architecture: false, memory: true },
@@ -75,7 +83,202 @@ function build(order: 'forward' | 'reverse' = 'forward') {
   return collector.finalize();
 }
 
+const deterministicV2Request: RetrievalTraceRequestShapeV1 = {
+  sources: { code: false, architecture: true, memory: true },
+  projectScopeApplied: true,
+  tenantScope: 'default',
+  entityScope: 'few',
+  tagScope: 'none',
+  temporalFilterApplied: false,
+  queryLength: 'medium',
+  queryForm: 'identifier-heavy',
+  tokenBudget: 'large',
+  diversification: 'none',
+  plannedChannels: [
+    'arch.fulltext',
+    'arch.hierarchy',
+    'arch.entity',
+    'arch.dependency',
+    'arch.aspect',
+    'memory.graph',
+  ],
+};
+
+type DeterministicV2OutputChannel = typeof RETRIEVAL_TRACE_DETERMINISTIC_OUTPUT_CHANNEL_ORDER_V2[number];
+
+function deterministicV2Candidate(
+  channel: DeterministicV2OutputChannel,
+  rank = 1,
+): RetrievalTraceCandidateDraft {
+  const sourceType = channel === 'arch.aspect'
+    ? 'aspect'
+    : channel === 'memory.graph' ? 'semantic' : 'arch_entity';
+  return {
+    sourceType,
+    channels: [{ channel, rank }],
+    evidence: channel === 'memory.graph' ? { confidence: 0.8 } : {},
+    estimatedTokens: channel === 'memory.graph' ? 90 : 40,
+  };
+}
+
+function buildDeterministicV2(order: 'forward' | 'reverse' = 'forward') {
+  const collector = new RetrievalTraceCollector('deterministic-v2', deterministicV2Request);
+  for (const channel of deterministicV2Request.plannedChannels) {
+    collector.attemptChannel(channel);
+    collector.settleChannel(channel, { outcome: 'success' });
+  }
+  const drafts = RETRIEVAL_TRACE_DETERMINISTIC_OUTPUT_CHANNEL_ORDER_V2.map((channel) => ({
+    channel,
+    draft: deterministicV2Candidate(channel),
+  }));
+  const handles = new Map<DeterministicV2OutputChannel, RetrievalTraceCandidateHandle>();
+  for (const item of order === 'forward' ? drafts : [...drafts].reverse()) {
+    handles.set(item.channel, collector.addCandidate(item.draft));
+  }
+  for (const channel of RETRIEVAL_TRACE_DETERMINISTIC_OUTPUT_CHANNEL_ORDER_V2) {
+    const handle = handles.get(channel)!;
+    if (channel === 'arch.dependency') {
+      collector.recordFilter(handle, { name: 'token-budget', outcome: 'fail' });
+      collector.recordTerminal(handle, { outcome: 'excluded', reasons: ['token-budget'] });
+    } else {
+      collector.recordFilter(handle, { name: 'token-budget', outcome: 'pass' });
+      collector.recordTerminal(handle, { outcome: 'included', reasons: [] });
+    }
+  }
+  return collector.finalize();
+}
+
 describe('RET-001A retrieval trace contract', () => {
+  it('derives deterministic-v2 refs and outputs from the frozen algorithm order', () => {
+    expect(RETRIEVAL_TRACE_DETERMINISTIC_OUTPUT_CHANNEL_ORDER_V2).toEqual([
+      'arch.hierarchy', 'arch.entity', 'arch.dependency', 'arch.aspect', 'memory.graph',
+    ]);
+    const forward = buildDeterministicV2('forward');
+    const reverse = buildDeterministicV2('reverse');
+    expect(reverse).toEqual(forward);
+    expect(forward.schemaVersion).toBe('1.0.0');
+    expect(forward.algorithmVersion).toBe('deterministic-v2');
+    expect(forward.candidates.map((item) => [item.ref, item.sourceType, item.channels[0]!.channel]))
+      .toEqual([
+        ['c0001', 'arch_entity', 'arch.hierarchy'],
+        ['c0002', 'arch_entity', 'arch.entity'],
+        ['c0003', 'arch_entity', 'arch.dependency'],
+        ['c0004', 'aspect', 'arch.aspect'],
+        ['c0005', 'semantic', 'memory.graph'],
+      ]);
+    expect(forward.resultOrder).toEqual(['c0001', 'c0002', 'c0004', 'c0005']);
+    expect(forward.events.filter((event) => event.kind === 'deterministic-output'))
+      .toEqual([
+        { sequence: 18, kind: 'deterministic-output', ref: 'c0001', rank: 1 },
+        { sequence: 19, kind: 'deterministic-output', ref: 'c0002', rank: 2 },
+        { sequence: 20, kind: 'deterministic-output', ref: 'c0004', rank: 3 },
+        { sequence: 21, kind: 'deterministic-output', ref: 'c0005', rank: 4 },
+      ]);
+    expect(replayRetrievalTrace(forward).resultOrder).toEqual(forward.resultOrder);
+  });
+
+  it('rejects caller output ordinals and closed deterministic-v2 provenance violations', () => {
+    const collector = new RetrievalTraceCollector('deterministic-v2', deterministicV2Request);
+    const entity = collector.addCandidate(deterministicV2Candidate('arch.entity'));
+    expect(() => collector.recordOutput(entity, 1)).toThrow(/derived/);
+
+    expect(() => collector.addCandidate({
+      ...deterministicV2Candidate('arch.entity', 2),
+      sourceType: 'semantic',
+    })).toThrow(/source-final/);
+    expect(() => collector.addCandidate({
+      ...deterministicV2Candidate('arch.entity', 3),
+      channels: [
+        { channel: 'arch.entity', rank: 3 },
+        { channel: 'arch.hierarchy', rank: 3 },
+      ],
+    })).toThrow(/one source-final channel/);
+    expect(() => collector.recordMmrRound(1, entity, [])).toThrow(/does not support MMR/);
+  });
+
+  it('uses the deterministic-v2 total order for legacy planned-channel validation only', () => {
+    const plannedChannels = [
+      ...deterministicV2Request.plannedChannels,
+      'memory.scope' as const,
+      'code.fulltext' as const,
+    ];
+    const collector = new RetrievalTraceCollector('deterministic-v2', {
+      ...deterministicV2Request,
+      sources: { code: true, architecture: true, memory: true },
+      plannedChannels,
+    });
+    for (const channel of plannedChannels) {
+      collector.attemptChannel(channel);
+      collector.settleChannel(channel, { outcome: 'success' });
+    }
+    expect(collector.finalize().requestShape.plannedChannels).toEqual(plannedChannels);
+    expect(() => new RetrievalTraceCollector('deterministic-v2', {
+      ...deterministicV2Request,
+      plannedChannels: ['memory.graph', 'arch.entity'],
+    })).toThrow(/not canonical/);
+  });
+
+  it('assigns refs by contiguous source-final rank rather than registration order', () => {
+    const collector = new RetrievalTraceCollector('deterministic-v2', {
+      ...deterministicV2Request,
+      plannedChannels: ['arch.entity'],
+    });
+    collector.attemptChannel('arch.entity');
+    collector.settleChannel('arch.entity', { outcome: 'success' });
+    const second = collector.addCandidate(deterministicV2Candidate('arch.entity', 2));
+    const first = collector.addCandidate(deterministicV2Candidate('arch.entity', 1));
+    collector.recordTerminal(second, { outcome: 'included', reasons: [] });
+    collector.recordTerminal(first, { outcome: 'included', reasons: [] });
+    const trace = collector.finalize();
+    expect(trace.candidates.map((item) => item.channels[0]!.rank)).toEqual([1, 2]);
+    expect(trace.resultOrder).toEqual(['c0001', 'c0002']);
+    expect(() => assertRetrievalTraceConformant(trace)).not.toThrow();
+  });
+
+  it('fails deterministic-v2 conformance on local-rank and derived-output tampering even with a new digest', () => {
+    const gapCollector = new RetrievalTraceCollector('deterministic-v2', {
+      ...deterministicV2Request,
+      plannedChannels: ['arch.entity'],
+    });
+    gapCollector.attemptChannel('arch.entity');
+    gapCollector.settleChannel('arch.entity', { outcome: 'success' });
+    const gap = gapCollector.addCandidate(deterministicV2Candidate('arch.entity', 2));
+    gapCollector.recordTerminal(gap, { outcome: 'included', reasons: [] });
+    const gapTrace = gapCollector.finalize();
+    expect(gapTrace.complete).toBe(false);
+    expect(() => replayRetrievalTrace(gapTrace)).toThrow(/incomplete/);
+
+    const tampered = structuredClone(buildDeterministicV2());
+    const firstOutput = tampered.events.find((event) => event.kind === 'deterministic-output' && event.rank === 1);
+    if (!firstOutput || firstOutput.kind !== 'deterministic-output') throw new Error('fixture missing deterministic output');
+    firstOutput.ref = 'c0005';
+    tampered.replayStateDigest = computeRetrievalTraceReplayStateDigest(tampered);
+    expect(() => replayRetrievalTrace(tampered)).toThrow(/derived deterministic output/);
+  });
+
+  it('represents the exact deterministic no-match presentation as zero evidence candidates', () => {
+    const collector = new RetrievalTraceCollector('deterministic-v2', {
+      ...deterministicV2Request,
+      sources: { code: false, architecture: true, memory: false },
+      entityScope: 'none',
+      plannedChannels: ['arch.fulltext'],
+    });
+    collector.attemptChannel('arch.fulltext');
+    collector.settleChannel('arch.fulltext', { outcome: 'success' });
+    const trace = collector.finalize();
+    expect(trace).toMatchObject({ complete: true, candidates: [], resultOrder: [], terminalExclusions: [] });
+    expect(replayRetrievalTrace(trace).resultOrder).toEqual([]);
+  });
+
+  it('freezes deterministic-v2 canonical JSON and digest across the Node 20/22 matrix', () => {
+    const trace = buildDeterministicV2('reverse');
+    expect(trace).toEqual(deterministicV2Fixture);
+    expect(canonicalTraceJson(trace)).toBe(canonicalTraceJson(deterministicV2Fixture));
+    expect(trace.replayStateDigest).toBe('sha256:744c26c828a761ab7568163662131d5674802341783d2687539c05f8110a2c2d');
+    expect(build().replayStateDigest)
+      .toBe('sha256:1cd91a9926a28949a35adfd0c4183a831cac25d2fcd230307463d3027a09a7db');
+  });
+
   it('derives refs and ordered events without caller IDs, ordinals, or async arrival order', () => {
     const forward = build('forward');
     const reverse = build('reverse');

@@ -51,14 +51,26 @@ const AGGREGATE_LIMITS = Object.freeze({
 const MAX_TRACE_NUMBER = 1_000_000;
 const DANGEROUS_KEYS = new Set(['__proto__', 'prototype', 'constructor']);
 
-export type RetrievalTraceAlgorithmVersion = 'ranked-v1' | 'deterministic-v1';
+export type RetrievalTraceAlgorithmVersion = 'ranked-v1' | 'deterministic-v1' | 'deterministic-v2';
 export type RetrievalTraceSourceType =
   | 'semantic' | 'episodic' | 'symbol' | 'arch_entity' | 'aspect' | 'fact' | 'block';
 export type RetrievalTraceChannel =
   | 'memory.scope' | 'memory.semantic-vector' | 'memory.episodic-vector' | 'memory.fact'
   | 'memory.block' | 'memory.graph' | 'code.fulltext' | 'code.lexical-vector'
   | 'code.dense-vector' | 'code.semantic-vector' | 'arch.fulltext' | 'arch.hierarchy'
-  | 'arch.dependency' | 'arch.aspect';
+  | 'arch.dependency' | 'arch.aspect' | 'arch.entity';
+export const RETRIEVAL_TRACE_DETERMINISTIC_OUTPUT_CHANNEL_ORDER_V2 = Object.freeze([
+  'arch.hierarchy',
+  'arch.entity',
+  'arch.dependency',
+  'arch.aspect',
+  'memory.graph',
+] as const);
+// The exact deterministic "No matching entities found" sentinel is presentation,
+// not retrieved evidence. Its trace therefore has a successful discovery channel
+// and zero candidates/output refs; no task text or synthetic provenance is stored.
+export type RetrievalTraceDeterministicOutputChannelV2 =
+  typeof RETRIEVAL_TRACE_DETERMINISTIC_OUTPUT_CHANNEL_ORDER_V2[number];
 export type RetrievalTraceFilterName =
   | 'source-enabled' | 'tenant' | 'project' | 'entity' | 'tag' | 'temporal'
   | 'language' | 'kind' | 'dedup' | 'candidate-window' | 'mmr' | 'limit' | 'token-budget';
@@ -77,12 +89,12 @@ export type RetrievalTraceIncompleteReason =
   | 'candidate-terminal-conflict' | 'candidate-output-gap' | 'candidate-event-conflict'
   | 'candidate-identity-collision' | 'mmr-gap' | 'limit-overflow';
 
-const ALGORITHMS = ['ranked-v1', 'deterministic-v1'] as const;
+const ALGORITHMS = ['ranked-v1', 'deterministic-v1', 'deterministic-v2'] as const;
 const SOURCE_TYPES = ['semantic', 'episodic', 'symbol', 'arch_entity', 'aspect', 'fact', 'block'] as const;
 const CHANNELS = [
   'memory.scope', 'memory.semantic-vector', 'memory.episodic-vector', 'memory.fact', 'memory.block', 'memory.graph',
   'code.fulltext', 'code.lexical-vector', 'code.dense-vector', 'code.semantic-vector',
-  'arch.fulltext', 'arch.hierarchy', 'arch.dependency', 'arch.aspect',
+  'arch.fulltext', 'arch.hierarchy', 'arch.dependency', 'arch.aspect', 'arch.entity',
 ] as const;
 const FILTERS = [
   'source-enabled', 'tenant', 'project', 'entity', 'tag', 'temporal', 'language', 'kind',
@@ -128,7 +140,36 @@ const FILTER_EXCLUSION_REASON: Readonly<Record<RetrievalTraceFilterName, Retriev
 });
 
 const channelOrder = new Map(CHANNELS.map((channel, index) => [channel, index]));
+const deterministicV2ChannelOrderValues: readonly RetrievalTraceChannel[] = Object.freeze([
+  'arch.fulltext',
+  ...RETRIEVAL_TRACE_DETERMINISTIC_OUTPUT_CHANNEL_ORDER_V2,
+  ...CHANNELS.filter((channel) => channel !== 'arch.fulltext'
+    && !RETRIEVAL_TRACE_DETERMINISTIC_OUTPUT_CHANNEL_ORDER_V2.includes(
+      channel as RetrievalTraceDeterministicOutputChannelV2,
+    )),
+]);
+const deterministicV2ChannelOrder = new Map(
+  deterministicV2ChannelOrderValues.map((channel, index) => [channel, index]),
+);
 const sourceOrder = new Map(SOURCE_TYPES.map((source, index) => [source, index]));
+const deterministicV2SourceBinding: Readonly<Record<RetrievalTraceDeterministicOutputChannelV2, RetrievalTraceSourceType>> = Object.freeze({
+  'arch.hierarchy': 'arch_entity',
+  'arch.entity': 'arch_entity',
+  'arch.dependency': 'arch_entity',
+  'arch.aspect': 'aspect',
+  'memory.graph': 'semantic',
+});
+
+function orderForAlgorithm(algorithmVersion: RetrievalTraceAlgorithmVersion): ReadonlyMap<RetrievalTraceChannel, number> {
+  return algorithmVersion === 'deterministic-v2' ? deterministicV2ChannelOrder : channelOrder;
+}
+
+function isDeterministicV2OutputChannel(
+  channel: unknown,
+): channel is RetrievalTraceDeterministicOutputChannelV2 {
+  return typeof channel === 'string'
+    && (RETRIEVAL_TRACE_DETERMINISTIC_OUTPUT_CHANNEL_ORDER_V2 as readonly string[]).includes(channel);
+}
 
 export interface RetrievalTraceRequestShapeV1 {
   sources: { code: boolean; architecture: boolean; memory: boolean };
@@ -490,7 +531,11 @@ export function canonicalTraceJson(value: unknown): string {
   return JSON.stringify(canonicalizeValue(value, 'trace', new WeakSet()));
 }
 
-function validateRequestShape(value: unknown, errors: string[]): void {
+function validateRequestShape(
+  value: unknown,
+  errors: string[],
+  algorithmVersion: RetrievalTraceAlgorithmVersion = 'ranked-v1',
+): void {
   const request = safeRecord(value, 'trace.requestShape', errors);
   if (!request) return;
   const keys = [
@@ -525,7 +570,8 @@ function validateRequestShape(value: unknown, errors: string[]): void {
   if (planned) {
     if (planned.some((channel) => !enumHas(CHANNELS, channel))) errors.push('trace.requestShape.plannedChannels has invalid channels');
     if (new Set(planned).size !== planned.length) errors.push('trace.requestShape.plannedChannels has duplicates');
-    const sorted = [...planned].sort((a, b) => (channelOrder.get(a as RetrievalTraceChannel) ?? 99) - (channelOrder.get(b as RetrievalTraceChannel) ?? 99));
+    const order = orderForAlgorithm(algorithmVersion);
+    const sorted = [...planned].sort((a, b) => (order.get(a as RetrievalTraceChannel) ?? 99) - (order.get(b as RetrievalTraceChannel) ?? 99));
     if (canonicalTraceJson(planned) !== canonicalTraceJson(sorted)) errors.push('trace.requestShape.plannedChannels is not canonical');
   }
 }
@@ -540,7 +586,12 @@ function validateEvidence(value: unknown, label: string, errors: string[]): void
   if (evidence.invalidated !== undefined && typeof evidence.invalidated !== 'boolean') errors.push(`${label}.invalidated must be boolean`);
 }
 
-function validateCandidate(value: unknown, index: number, errors: string[]): void {
+function validateCandidate(
+  value: unknown,
+  index: number,
+  errors: string[],
+  algorithmVersion: RetrievalTraceAlgorithmVersion = 'ranked-v1',
+): void {
   const label = `trace.candidates[${index}]`;
   const candidate = safeRecord(value, label, errors);
   if (!candidate) return;
@@ -563,8 +614,17 @@ function validateCandidate(value: unknown, index: number, errors: string[]): voi
   if (channels) {
     const identities = channels.map((raw) => isPlainRecord(raw) ? `${String(raw.channel)}:${String(raw.rank)}` : 'invalid');
     if (new Set(identities).size !== identities.length) errors.push(`${label}.channels has duplicates`);
-    const sorted = [...channels].sort((a, b) => compareChannelState(a, b));
+    const sorted = [...channels].sort((a, b) => compareChannelState(a, b, algorithmVersion));
     if (canonicalTraceJson(channels) !== canonicalTraceJson(sorted)) errors.push(`${label}.channels is not canonical`);
+    if (algorithmVersion === 'deterministic-v2') {
+      if (channels.length !== 1) errors.push(`${label} must have exactly one source-final channel for deterministic-v2`);
+      const sourceFinal = isPlainRecord(channels[0]) ? channels[0].channel : undefined;
+      if (!isDeterministicV2OutputChannel(sourceFinal)) {
+        errors.push(`${label} has an invalid deterministic-v2 source-final channel`);
+      } else if (candidate.sourceType !== deterministicV2SourceBinding[sourceFinal]) {
+        errors.push(`${label} sourceType disagrees with its deterministic-v2 source-final channel`);
+      }
+    }
   }
   validateEvidence(candidate.evidence, `${label}.evidence`, errors);
   if (!validInteger(candidate.estimatedTokens, 0, 1_000_000)) errors.push(`${label}.estimatedTokens is outside semantic bounds`);
@@ -740,8 +800,11 @@ function validateRetrievalTraceUnsafe(value: unknown): string[] {
   exactKeys(trace, keys, 'trace', errors);
   requireKeys(trace, keys, 'trace', errors);
   if (trace.schemaVersion !== RETRIEVAL_TRACE_VERSION) errors.push('trace.schemaVersion is unsupported');
+  const algorithmVersion = enumHas(ALGORITHMS, trace.algorithmVersion)
+    ? trace.algorithmVersion
+    : 'ranked-v1';
   if (!enumHas(ALGORITHMS, trace.algorithmVersion)) errors.push('trace.algorithmVersion is unsupported');
-  validateRequestShape(trace.requestShape, errors);
+  validateRequestShape(trace.requestShape, errors, algorithmVersion);
   if (typeof trace.complete !== 'boolean') errors.push('trace.complete must be boolean');
   const incomplete = denseArray(trace.incompleteReasons, INCOMPLETE_REASONS.length, 'trace.incompleteReasons', errors);
   if (incomplete) {
@@ -752,7 +815,7 @@ function validateRetrievalTraceUnsafe(value: unknown): string[] {
     if ((trace.complete === true) !== (incomplete.length === 0)) errors.push('trace.complete disagrees with incompleteReasons');
   }
   const candidates = denseArray(trace.candidates, HARD_LIMITS.candidates, 'trace.candidates', errors);
-  candidates?.forEach((candidate, index) => validateCandidate(candidate, index, errors));
+  candidates?.forEach((candidate, index) => validateCandidate(candidate, index, errors, algorithmVersion));
   if (candidates) {
     candidates.forEach((candidate, index) => {
       if (isPlainRecord(candidate) && candidate.ref !== `c${String(index + 1).padStart(4, '0')}`) errors.push('trace.candidates refs are not contiguous');
@@ -819,6 +882,15 @@ function outputEvents(trace: RetrievalTraceV1): Array<Extract<RetrievalTraceStag
 function reconstructFromEvents(trace: RetrievalTraceV1): RetrievalTraceReplayResult {
   const expectedKind = trace.algorithmVersion === 'ranked-v1' ? 'ranked-output' : 'deterministic-output';
   const outputs = outputEvents(trace).filter((event) => event.kind === expectedKind).sort((a, b) => a.rank - b.rank);
+  const terminals = terminalEvents(trace);
+  // V2 output ranks are derived from canonical source-final candidate order and
+  // terminal inclusion. Output events and top-level arrays are checked echoes,
+  // never the authority used to replay the deterministic algorithm.
+  const resultOrder = trace.algorithmVersion === 'deterministic-v2'
+    ? trace.candidates
+      .filter((candidate) => terminals.some((event) => event.ref === candidate.ref && event.outcome === 'included'))
+      .map((candidate) => candidate.ref)
+    : outputs.map((event) => event.ref);
   const exclusions = terminalEvents(trace)
     .filter((event): event is typeof event & { outcome: 'excluded' | 'failed' } => event.outcome !== 'included')
     .sort((a, b) => compareText(a.ref, b.ref))
@@ -828,7 +900,7 @@ function reconstructFromEvents(trace: RetrievalTraceV1): RetrievalTraceReplayRes
       reasons: [...event.reasons],
       ...(event.duplicateOfRef === undefined ? {} : { duplicateOfRef: event.duplicateOfRef }),
     }));
-  return { resultOrder: outputs.map((event) => event.ref), terminalExclusions: exclusions, replayStateDigest: trace.replayStateDigest };
+  return { resultOrder, terminalExclusions: exclusions, replayStateDigest: trace.replayStateDigest };
 }
 
 function conformanceErrors(trace: RetrievalTraceV1): string[] {
@@ -845,9 +917,10 @@ function conformanceErrors(trace: RetrievalTraceV1): string[] {
     'stage-failure': 7,
   };
   const eventOrderKey = (event: RetrievalTraceStageEventV1): string => {
+    const order = orderForAlgorithm(trace.algorithmVersion);
     switch (event.kind) {
       case 'channel-attempt':
-      case 'channel-terminal': return String(channelOrder.get(event.channel) ?? 99).padStart(2, '0');
+      case 'channel-terminal': return String(order.get(event.channel) ?? 99).padStart(2, '0');
       case 'candidate-filter': return `${event.ref}:${event.name}`;
       case 'candidate-score': return `${event.ref}:${event.name}`;
       case 'mmr-round': return String(event.round).padStart(4, '0');
@@ -997,6 +1070,31 @@ function conformanceErrors(trace: RetrievalTraceV1): string[] {
     const actual = outputs.sort((a, b) => a.rank - b.rank).map((event) => event.ref);
     if (canonicalTraceJson(expected) !== canonicalTraceJson(actual)) errors.push('deterministic output order does not match settled candidate order');
   }
+  if (trace.algorithmVersion === 'deterministic-v2') {
+    if (trace.requestShape.diversification !== 'none') errors.push('deterministic-v2 algorithm cannot use MMR');
+    const actualCandidateOrder = trace.candidates.map((candidate) => candidate.ref);
+    const canonicalCandidates = [...trace.candidates]
+      .sort((a, b) => compareChannelState(a.channels[0], b.channels[0], 'deterministic-v2'))
+      .map((candidate) => candidate.ref);
+    if (canonicalTraceJson(actualCandidateOrder) !== canonicalTraceJson(canonicalCandidates)) {
+      errors.push('deterministic-v2 candidates are not in canonical source-final order');
+    }
+    for (const channel of RETRIEVAL_TRACE_DETERMINISTIC_OUTPUT_CHANNEL_ORDER_V2) {
+      const localRanks = trace.candidates
+        .filter((candidate) => candidate.channels[0]?.channel === channel)
+        .map((candidate) => candidate.channels[0]!.rank)
+        .sort((a, b) => a - b);
+      if (!localRanks.every((rank, index) => rank === index + 1)) {
+        errors.push('deterministic-v2 source-final ranks are not contiguous');
+      }
+    }
+    const included = new Set(terminals.filter((event) => event.outcome === 'included').map((event) => event.ref));
+    const derived = trace.candidates.map((candidate) => candidate.ref).filter((ref) => included.has(ref));
+    const actual = outputs.sort((a, b) => a.rank - b.rank).map((event) => event.ref);
+    if (canonicalTraceJson(derived) !== canonicalTraceJson(actual)) {
+      errors.push('deterministic-v2 output events do not match derived deterministic output');
+    }
+  }
 
   const reconstructed = reconstructFromEvents(trace);
   if (canonicalTraceJson(trace.resultOrder) !== canonicalTraceJson(reconstructed.resultOrder)) errors.push('trace.resultOrder does not match replayed events');
@@ -1034,9 +1132,12 @@ export function replayRetrievalTrace(value: unknown): RetrievalTraceReplayResult
   return reconstructFromEvents(value);
 }
 
-function normalizeRequestShape(input: RetrievalTraceRequestShapeV1): RetrievalTraceRequestShapeV1 {
+function normalizeRequestShape(
+  input: RetrievalTraceRequestShapeV1,
+  algorithmVersion: RetrievalTraceAlgorithmVersion,
+): RetrievalTraceRequestShapeV1 {
   const rawErrors: string[] = [];
-  validateRequestShape(input, rawErrors);
+  validateRequestShape(input, rawErrors, algorithmVersion);
   if (rawErrors.length > 0) throw new RetrievalTraceValidationError(rawErrors.join('; '));
   const normalized: RetrievalTraceRequestShapeV1 = {
     sources: { code: input.sources.code, architecture: input.sources.architecture, memory: input.sources.memory },
@@ -1049,23 +1150,34 @@ function normalizeRequestShape(input: RetrievalTraceRequestShapeV1): RetrievalTr
     queryForm: input.queryForm,
     tokenBudget: input.tokenBudget,
     diversification: input.diversification,
-    plannedChannels: [...input.plannedChannels].sort((a, b) => (channelOrder.get(a) ?? 99) - (channelOrder.get(b) ?? 99)),
+    plannedChannels: [...input.plannedChannels].sort((a, b) => {
+      const order = orderForAlgorithm(algorithmVersion);
+      return (order.get(a) ?? 99) - (order.get(b) ?? 99);
+    }),
   };
   const errors: string[] = [];
-  validateRequestShape(normalized, errors);
+  validateRequestShape(normalized, errors, algorithmVersion);
   if (errors.length > 0) throw new RetrievalTraceValidationError(errors.join('; '));
   return normalized;
 }
 
-function compareChannelState(a: unknown, b: unknown): number {
+function compareChannelState(
+  a: unknown,
+  b: unknown,
+  algorithmVersion: RetrievalTraceAlgorithmVersion = 'ranked-v1',
+): number {
   const left = isPlainRecord(a) ? a : {};
   const right = isPlainRecord(b) ? b : {};
-  return (channelOrder.get(left.channel as RetrievalTraceChannel) ?? 99) - (channelOrder.get(right.channel as RetrievalTraceChannel) ?? 99)
+  const order = orderForAlgorithm(algorithmVersion);
+  return (order.get(left.channel as RetrievalTraceChannel) ?? 99) - (order.get(right.channel as RetrievalTraceChannel) ?? 99)
     || Number(left.rank ?? 0) - Number(right.rank ?? 0)
     || Number(left.score ?? 0) - Number(right.score ?? 0);
 }
 
-function normalizeCandidate(input: RetrievalTraceCandidateDraft): RetrievalTraceCandidateDraft {
+function normalizeCandidate(
+  input: RetrievalTraceCandidateDraft,
+  algorithmVersion: RetrievalTraceAlgorithmVersion,
+): RetrievalTraceCandidateDraft {
   const rawErrors: string[] = [];
   const draft = safeRecord(input, 'candidate draft', rawErrors);
   if (draft) {
@@ -1076,7 +1188,7 @@ function normalizeCandidate(input: RetrievalTraceCandidateDraft): RetrievalTrace
   validateCandidate({
     ref: 'c0001', sourceType: input.sourceType, channels: input.channels,
     evidence: input.evidence, estimatedTokens: input.estimatedTokens,
-  }, 0, rawErrors);
+  }, 0, rawErrors, algorithmVersion);
   if (rawErrors.length > 0) throw new RetrievalTraceValidationError(rawErrors.join('; '));
   const normalized: RetrievalTraceCandidateDraft = {
     sourceType: input.sourceType,
@@ -1084,7 +1196,7 @@ function normalizeCandidate(input: RetrievalTraceCandidateDraft): RetrievalTrace
       channel: channel.channel,
       rank: channel.rank,
       ...(channel.score === undefined ? {} : { score: roundTraceNumber(channel.score) }),
-    })).sort(compareChannelState),
+    })).sort((a, b) => compareChannelState(a, b, algorithmVersion)),
     evidence: {
       ...(input.evidence.confidence === undefined ? {} : { confidence: roundTraceNumber(input.evidence.confidence) }),
       ...(input.evidence.sourceCount === undefined ? {} : { sourceCount: input.evidence.sourceCount }),
@@ -1094,7 +1206,7 @@ function normalizeCandidate(input: RetrievalTraceCandidateDraft): RetrievalTrace
     estimatedTokens: input.estimatedTokens,
   };
   const errors: string[] = [];
-  validateCandidate({ ref: 'c0001', ...normalized }, 0, errors);
+  validateCandidate({ ref: 'c0001', ...normalized }, 0, errors, algorithmVersion);
   if (errors.length > 0) throw new RetrievalTraceValidationError(errors.join('; '));
   return normalized;
 }
@@ -1122,10 +1234,14 @@ type UnsequencedTraceEvent = RetrievalTraceStageEventV1 extends infer Event
   ? Event extends { sequence: number } ? Omit<Event, 'sequence'> : never
   : never;
 
-function compareCandidateEntries(a: CandidateEntry, b: CandidateEntry): number {
+function compareCandidateEntries(
+  a: CandidateEntry,
+  b: CandidateEntry,
+  algorithmVersion: RetrievalTraceAlgorithmVersion,
+): number {
   const firstA = a.draft.channels[0]!;
   const firstB = b.draft.channels[0]!;
-  return compareChannelState(firstA, firstB)
+  return compareChannelState(firstA, firstB, algorithmVersion)
     || (sourceOrder.get(a.draft.sourceType) ?? 99) - (sourceOrder.get(b.draft.sourceType) ?? 99)
     || compareText(canonicalTraceJson(a.draft.channels), canonicalTraceJson(b.draft.channels))
     || compareText(a.fingerprint, b.fingerprint);
@@ -1157,7 +1273,7 @@ export class RetrievalTraceCollector {
     options: RetrievalTraceCollectorOptions = {},
   ) {
     if (!enumHas(ALGORITHMS, algorithmVersion)) throw new RetrievalTraceValidationError('algorithmVersion is unsupported');
-    this.requestShape = normalizeRequestShape(requestShape);
+    this.requestShape = normalizeRequestShape(requestShape, algorithmVersion);
     this.limits = {
       maxCandidates: boundedOption(options.maxCandidates, DEFAULT_LIMITS.maxCandidates, HARD_LIMITS.candidates, 'maxCandidates'),
       maxEvents: boundedOption(options.maxEvents, DEFAULT_LIMITS.maxEvents, HARD_LIMITS.events, 'maxEvents'),
@@ -1177,7 +1293,7 @@ export class RetrievalTraceCollector {
   addCandidate(input: RetrievalTraceCandidateDraft): RetrievalTraceCandidateHandle {
     this.assertOpen();
     if (this.entries.length >= this.limits.maxCandidates) this.limitExceeded('candidate limit exceeded');
-    const draft = normalizeCandidate(input);
+    const draft = normalizeCandidate(input, this.algorithmVersion);
     if (draft.channels.length > this.limits.maxChannelsPerCandidate) this.limitExceeded('candidate channel limit exceeded');
     const fingerprint = createHash('sha256').update(canonicalTraceJson(draft)).digest('hex');
     if (this.entries.some((entry) => entry.fingerprint === fingerprint)) {
@@ -1275,6 +1391,9 @@ export class RetrievalTraceCollector {
   recordOutput(handle: RetrievalTraceCandidateHandle, rank: number): void {
     this.assertOpen();
     const entry = this.resolve(handle);
+    if (this.algorithmVersion === 'deterministic-v2') {
+      throw new RetrievalTraceValidationError('deterministic-v2 output rank is derived by the collector');
+    }
     this.reserveEvent();
     if (!validInteger(rank, 1, this.limits.maxCandidates) || entry.outputRank !== undefined) {
       this.incomplete.add('candidate-output-gap');
@@ -1314,6 +1433,9 @@ export class RetrievalTraceCollector {
 
   recordMmrRound(round: number, selected: RetrievalTraceCandidateHandle, inputs: readonly RetrievalTraceMmrRecordInput[]): void {
     this.assertOpen();
+    if (this.algorithmVersion === 'deterministic-v2') {
+      throw new RetrievalTraceValidationError('deterministic-v2 does not support MMR');
+    }
     this.reserveEvent();
     const arrayErrors: string[] = [];
     const denseInputs = denseArray(inputs, this.limits.maxMmrRecordsPerRound, 'MMR records', arrayErrors);
@@ -1392,7 +1514,13 @@ export class RetrievalTraceCollector {
     for (const channel of this.requestShape.plannedChannels) {
       if (!this.attempts.has(channel) || !this.settlements.has(channel)) this.incomplete.add('channel-gap');
     }
-    const sortedEntries = [...this.entries].sort(compareCandidateEntries);
+    const sortedEntries = [...this.entries].sort((a, b) => compareCandidateEntries(a, b, this.algorithmVersion));
+    if (this.algorithmVersion === 'deterministic-v2') {
+      let outputRank = 0;
+      for (const entry of sortedEntries) {
+        if (entry.terminal?.outcome === 'included') entry.outputRank = ++outputRank;
+      }
+    }
     const usedChannelRanks = new Set<string>();
     for (const entry of sortedEntries) {
       for (const channel of entry.draft.channels) {
