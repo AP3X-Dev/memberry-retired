@@ -1376,6 +1376,16 @@ export class RetrievalTraceCollector {
     this.stageFailures.push({ stage, code });
   }
 
+  /** @internal Runtime adapters may fail closed when safe evidence cannot be
+   * represented as events without inventing provenance. */
+  markIncomplete(reason: RetrievalTraceIncompleteReason): void {
+    this.assertOpen();
+    if (!enumHas(INCOMPLETE_REASONS, reason)) {
+      throw new RetrievalTraceValidationError('incomplete reason is unsupported');
+    }
+    this.incomplete.add(reason);
+  }
+
   finalize(): RetrievalTraceV1 {
     this.assertOpen();
     this.finalized = true;

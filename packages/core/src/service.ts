@@ -24,6 +24,14 @@ import { normalizePredicate } from './predicates.js';
 import { CARD_BLOCK_NAMES, DEFAULT_TENANT } from './types.js';
 import { redactSecrets } from './redact.js';
 import { readEnv } from './config/settings.js';
+import type {
+  InternalRetrievalCandidateObservation,
+  InternalRetrievalChannel,
+  InternalRetrievalChannelObservation,
+  InternalRetrievalObservation,
+  InternallyObserved,
+} from './retrieval-observer.js';
+import { InternalObservedRetrievalError } from './retrieval-observer.js';
 
 // ─── Dependency interfaces (injected, not concrete imports) ──────────────────
 
@@ -275,9 +283,39 @@ export class AMPService {
     return flight;
   }
 
+  /**
+   * Fresh, cache-independent load used solely by ranked runtime tracing.
+   *
+   * @internal This deliberately bypasses cache get/set and single-flight so the
+   * observation describes the current source executions rather than cached bytes.
+   */
+  async loadFreshObserved(scope: LoadScope): Promise<InternallyObserved<MemoryContext>> {
+    const observation: InternalRetrievalObservation = { channels: [], candidates: [], finalIds: [] };
+    try {
+      const value = await this._assembleLoad(scope, hashScope(scope), { observation, cacheResult: false });
+      return { value, observation };
+    } catch (cause) {
+      throw new InternalObservedRetrievalError(observation, { cause });
+    }
+  }
+
   /** Cache-miss assembly path for load(), wrapped by the single-flight guard above. */
-  private async _assembleLoad(scope: LoadScope, scopeHash: string): Promise<MemoryContext> {
+  private async _assembleLoad(
+    scope: LoadScope,
+    scopeHash: string,
+    instrumentation?: { observation: InternalRetrievalObservation; cacheResult: boolean },
+  ): Promise<MemoryContext> {
     const maxTokens = scope.max_tokens ?? 4096;
+    const observation = instrumentation?.observation;
+    const channelOutcomes = observation
+      ? new Map<InternalRetrievalChannel, InternalRetrievalChannelObservation>()
+      : undefined;
+    const settle = observation
+      ? (entry: InternalRetrievalChannelObservation): void => {
+          channelOutcomes!.set(entry.channel, entry);
+          observation.channels = [...channelOutcomes!.values()];
+        }
+      : undefined;
 
     // Fetch all independent layers CONCURRENTLY.
     // Blocks (core/working), semantics+vector, and facts are mutually
@@ -298,7 +336,7 @@ export class AMPService {
     // Pass asOf from temporal options so semantic queries filter inactive ABOUT edges consistently
     const asOf = scope.temporal?.as_of;
 
-    const blocksPromise: Promise<[MemoryBlock[], MemoryBlock[]]> =
+    let blocksPromise: Promise<[MemoryBlock[], MemoryBlock[]]> =
       this.blocks && projectTag
         ? Promise.all([
             this.blocks.listBlocks(projectTag, 'core'),
@@ -307,26 +345,51 @@ export class AMPService {
               : Promise.resolve([] as MemoryBlock[]),
           ])
         : Promise.resolve([[], []] as [MemoryBlock[], MemoryBlock[]]);
+    if (observation && this.blocks && projectTag) {
+      blocksPromise = blocksPromise.then(
+            (value) => { settle!({ channel: 'memory.block', outcome: 'success' }); return value; },
+            (error) => { settle!({ channel: 'memory.block', outcome: 'safe-failure', code: 'query-failed' }); throw error; },
+          );
+    }
 
-    const semanticsPromise = Promise.all([
-      this.neo4j.query.byScope({
+    const rawScopedSemanticsPromise = this.neo4j.query.byScope({
         entities: scope.entities,
         tags: scope.tags,
         limit: 50,
         asOf,
         tenantId: scope.tenantId,
         projectScope,
-      }),
-      this._vectorSearch(scope.task, 20, scope.tenantId, projectScope, scope.queryVector),
-    ]);
+      });
+    const scopedSemanticsPromise = observation
+      ? rawScopedSemanticsPromise.then(
+        (value) => { settle!({ channel: 'memory.scope', outcome: 'success' }); return value; },
+        (error) => { settle!({ channel: 'memory.scope', outcome: 'safe-failure', code: 'query-failed' }); throw error; },
+      )
+      : rawScopedSemanticsPromise;
+    const semanticVectorPromise = observation
+      ? this._vectorSearch(
+          scope.task, 20, scope.tenantId, projectScope, scope.queryVector, settle,
+        )
+      : this._vectorSearch(
+          scope.task, 20, scope.tenantId, projectScope, scope.queryVector,
+        );
+    // Preserve the ordinary nested aggregate (and therefore its failure timing)
+    // only on the ordinary path. The observed path awaits both promises below.
+    const semanticsPromise = observation
+      ? undefined
+      : Promise.all([scopedSemanticsPromise, semanticVectorPromise]);
 
     // Episodic recall channel: vector similarity over the raw captured episodes.
     // Semantics are the consolidated layer, but episodes hold the actual session
     // decisions and are recallable immediately at store() time — without this
     // channel, captured knowledge stays write-only until (if ever) consolidated.
-    const episodicVectorPromise = this._vectorSearchEpisodic(
-      scope.task, 20, scope.tenantId, projectScope, scope.queryVector,
-    );
+    const episodicVectorPromise = observation
+      ? this._vectorSearchEpisodic(
+          scope.task, 20, scope.tenantId, projectScope, scope.queryVector, settle,
+        )
+      : this._vectorSearchEpisodic(
+          scope.task, 20, scope.tenantId, projectScope, scope.queryVector,
+        );
 
     // OPT-41: one batched fact fetch (UNWIND ids) instead of one getActive per
     // entity. getActiveBatch returns per-entity arrays in input order, each
@@ -338,13 +401,43 @@ export class AMPService {
           ? this.neo4j.fact.getActiveBatch(scope.entities, scope.temporal, scope.tenantId)
           : Promise.all(scope.entities.map((e) => this.neo4j.fact!.getActive(e, scope.temporal, scope.tenantId)))
         : Promise.resolve([]);
+    const observedFactsPromise = observation && this.neo4j.fact && scope.entities && scope.entities.length > 0
+      ? factsPromise.then(
+          (value) => { settle!({ channel: 'memory.fact', outcome: 'success' }); return value; },
+          (error) => { settle!({ channel: 'memory.fact', outcome: 'safe-failure', code: 'query-failed' }); throw error; },
+        )
+      : factsPromise;
 
-    const [[coreRaw, workingRaw], [byScope, byVector], byVectorEpisodic, factResults] = await Promise.all([
-      blocksPromise,
-      semanticsPromise,
-      episodicVectorPromise,
-      factsPromise,
-    ]);
+    let coreRaw: MemoryBlock[];
+    let workingRaw: MemoryBlock[];
+    let byScope: SemanticNode[];
+    let byVector: Array<SemanticNode & { score: number }>;
+    let byVectorEpisodic: Array<EpisodicNode & { score: number }>;
+    let factResults: FactNode[][];
+    if (observation) {
+      // Await each attempted channel directly. Wrapping scope + vector in a
+      // nested Promise.all would settle on the first rejection while its
+      // sibling was still running, producing an incomplete failure trace.
+      const settled = await Promise.allSettled([
+        blocksPromise,
+        scopedSemanticsPromise,
+        semanticVectorPromise,
+        episodicVectorPromise,
+        observedFactsPromise,
+      ] as const);
+      const rejected = settled.find((entry) => entry.status === 'rejected');
+      if (rejected?.status === 'rejected') throw rejected.reason;
+      [[coreRaw, workingRaw], byScope, byVector, byVectorEpisodic, factResults] = settled.map(
+        (entry) => (entry as PromiseFulfilledResult<unknown>).value,
+      ) as [[MemoryBlock[], MemoryBlock[]], SemanticNode[], Array<SemanticNode & { score: number }>, Array<EpisodicNode & { score: number }>, FactNode[][]];
+    } else {
+      [[coreRaw, workingRaw], [byScope, byVector], byVectorEpisodic, factResults] = await Promise.all([
+        blocksPromise,
+        semanticsPromise!,
+        episodicVectorPromise,
+        observedFactsPromise,
+      ] as const);
+    }
 
     // Process blocks: filter empties, truncate to tier budget
     let coreBlocks: MemoryBlock[] = [];
@@ -396,17 +489,36 @@ export class AMPService {
 
     const seen = new Set<string>();
     const merged: Array<SemanticNode & { relevanceScore?: number }> = [];
+    const sourceTypeById = observation ? new Map<string, 'semantic' | 'episodic'>() : undefined;
+    const candidateChannels = observation
+      ? new Map<string, InternalRetrievalCandidateObservation['channels']>()
+      : undefined;
+    if (candidateChannels) {
+      byScope.forEach((node, index) => candidateChannels.set(node.id, [
+        { channel: 'memory.scope', rank: index + 1 },
+      ]));
+      byVector.forEach((node, index) => {
+        const channels = candidateChannels.get(node.id) ?? [];
+        channels.push({ channel: 'memory.semantic-vector', rank: index + 1, score: node.score });
+        candidateChannels.set(node.id, channels);
+      });
+      byVectorEpisodic.forEach((node, index) => candidateChannels.set(node.id, [
+        { channel: 'memory.episodic-vector', rank: index + 1, score: node.score },
+      ]));
+    }
     for (const node of byScope) {
       if (!seen.has(node.id) && inProjectScope(node, projectScope)) {
         seen.add(node.id);
         const vs = vectorScoreById.get(node.id);
         merged.push(vs !== undefined ? { ...node, relevanceScore: vs } : node);
+        sourceTypeById?.set(node.id, 'semantic');
       }
     }
     for (const node of byVector) {
       if (!seen.has(node.id) && inProjectScope(node, projectScope)) {
         seen.add(node.id);
         merged.push({ ...node, relevanceScore: node.score });
+        sourceTypeById?.set(node.id, 'semantic');
       }
     }
     // Episodic vector hits join the same ranked candidate pool as pseudo-semantic
@@ -429,6 +541,7 @@ export class AMPService {
           tenant_id: ep.tenant_id,
           relevanceScore: ep.score,
         });
+        sourceTypeById?.set(ep.id, 'episodic');
       }
     }
 
@@ -438,13 +551,22 @@ export class AMPService {
       if (seedEntities.length > 0) {
         try {
           const expanded = await this.neo4j.query.expandByGraph(seedEntities, 1, 5, asOf, scope.tenantId);
+          settle?.({ channel: 'memory.graph', outcome: 'success' });
           for (const node of expanded) {
+            if (candidateChannels) {
+              const index = expanded.indexOf(node);
+              const channels = candidateChannels.get(node.id) ?? [];
+              channels.push({ channel: 'memory.graph', rank: index + 1 });
+              candidateChannels.set(node.id, channels);
+            }
             if (!seen.has(node.id) && inProjectScope(node, projectScope)) {
               seen.add(node.id);
               merged.push({ ...node, relevanceScore: 0.3 });
+              sourceTypeById?.set(node.id, 'semantic');
             }
           }
         } catch (err: unknown) {
+          settle?.({ channel: 'memory.graph', outcome: 'safe-failure', code: 'query-failed' });
           // Graph expansion is best-effort — don't fail the load
         }
       }
@@ -488,6 +610,33 @@ export class AMPService {
       ...budgeted.map((m) => m.id),
     ];
 
+    if (observation) {
+      const finalIds = new Set(sources);
+      const memoryCandidates = merged.map((node) => ({
+        privateId: node.id,
+          sourceType: sourceTypeById!.get(node.id) ?? 'semantic',
+          channels: candidateChannels!.get(node.id) ?? [],
+        evidence: {
+          confidence: node.confidence,
+          sourceCount: node.signal_count,
+          ...(('superseded' in node) ? { superseded: Boolean((node as unknown as { superseded?: boolean }).superseded) } : {}),
+          ...(('invalidated' in node) ? { invalidated: Boolean((node as unknown as { invalidated?: boolean }).invalidated) } : {}),
+        },
+        estimatedTokens: estimateTokens(node.content),
+      } satisfies InternalRetrievalCandidateObservation));
+      const factCandidates = facts.map((fact, index) => ({
+        privateId: fact.id,
+        sourceType: 'fact' as const,
+        channels: [{ channel: 'memory.fact' as const, rank: index + 1 }],
+        evidence: { confidence: fact.confidence },
+        estimatedTokens: estimateTokens(`${fact.subject} ${fact.predicate} ${fact.object}`),
+      }));
+      observation.channels = [...channelOutcomes!.values()];
+      observation.candidates = [...memoryCandidates, ...factCandidates]
+        .filter((candidate) => candidate.channels.length > 0 || finalIds.has(candidate.privateId));
+      observation.finalIds = [...sources];
+    }
+
     const ctx: MemoryContext = {
       markdown,
       tokens: blockTokens + factTokens + archiveTokens,
@@ -498,14 +647,16 @@ export class AMPService {
     // 7. Cache (include scope tags for block-mutation invalidation).
     // Tenant-scoped so the ctx key + dep sets live under this tenant's segment;
     // another tenant's invalidate on the same shared tag can't evict it.
-    await this.redis.cache.set(
-      scopeHash,
-      ctx,
-      sources,
-      this.config.cache.contextTTL,
-      cacheScopeKeysForLoad(scope),
-      scope.tenantId,
-    );
+    if (instrumentation?.cacheResult !== false) {
+      await this.redis.cache.set(
+        scopeHash,
+        ctx,
+        sources,
+        this.config.cache.contextTTL,
+        cacheScopeKeysForLoad(scope),
+        scope.tenantId,
+      );
+    }
 
     return ctx;
   }
@@ -953,20 +1104,28 @@ export class AMPService {
     tenantId?: string,
     projectScope?: string,
     queryVector?: number[],
+    observe?: (entry: InternalRetrievalChannelObservation) => void,
   ): Promise<Array<SemanticNode & { score: number }>> {
     // Skip vector search when embeddings are unavailable (no API key): querying
     // the index with zero vectors yields uniform cosine scores and arbitrary
     // ordering. Returning [] lets scoped + graph-expanded retrieval carry load().
-    if (this.embedding.available === false) return [];
+    if (this.embedding.available === false) {
+      observe?.({ channel: 'memory.semantic-vector', outcome: 'safe-failure', code: 'unavailable' });
+      return [];
+    }
     try {
       // Shared query embedding: berry_context embeds the task ONCE and threads the
       // vector in via scope.queryVector so this channel doesn't re-embed the same
       // string. Deterministic embedding ⇒ identical to embedding it here. Direct
       // load() callers (no precomputed vector) fall back to embedding the text.
       const emb = queryVector ?? await this._getEmbedding(text);
-      return await this.neo4j.query.byVector(emb, limit, tenantId, projectScope);
+      const value = await this.neo4j.query.byVector(emb, limit, tenantId, projectScope);
+      observe?.({ channel: 'memory.semantic-vector', outcome: 'success' });
+      return value;
     } catch (err: unknown) {
-      console.error("[service] Suppressed error:", err);
+      if (observe) console.error('[memberry-core] Semantic vector search failed [query-failed]');
+      else console.error("[service] Suppressed error:", err);
+      observe?.({ channel: 'memory.semantic-vector', outcome: 'safe-failure', code: 'query-failed' });
       return [];
     }
   }
@@ -984,14 +1143,21 @@ export class AMPService {
     tenantId?: string,
     projectScope?: string,
     queryVector?: number[],
+    observe?: (entry: InternalRetrievalChannelObservation) => void,
   ): Promise<Array<EpisodicNode & { score: number }>> {
-    if (this.embedding.available === false) return [];
-    if (!this.neo4j.query.byVectorEpisodic) return [];
+    if (this.embedding.available === false || !this.neo4j.query.byVectorEpisodic) {
+      observe?.({ channel: 'memory.episodic-vector', outcome: 'safe-failure', code: 'unavailable' });
+      return [];
+    }
     try {
       const emb = queryVector ?? await this._getEmbedding(text);
-      return await this.neo4j.query.byVectorEpisodic(emb, limit, tenantId, projectScope);
+      const value = await this.neo4j.query.byVectorEpisodic(emb, limit, tenantId, projectScope);
+      observe?.({ channel: 'memory.episodic-vector', outcome: 'success' });
+      return value;
     } catch (err: unknown) {
-      console.error("[service] Suppressed error (episodic vector):", err);
+      if (observe) console.error('[memberry-core] Episodic vector search failed [query-failed]');
+      else console.error("[service] Suppressed error (episodic vector):", err);
+      observe?.({ channel: 'memory.episodic-vector', outcome: 'safe-failure', code: 'query-failed' });
       return [];
     }
   }

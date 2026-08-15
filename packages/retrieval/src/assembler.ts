@@ -3,6 +3,7 @@
 // architecture + code + memory into a single context package.
 
 import { type Driver } from 'neo4j-driver';
+import { isProxy } from 'node:util/types';
 import type {
   UnifiedContext,
   ContextSection,
@@ -18,9 +19,27 @@ import { expandQuery } from './expand.js';
 import { computeQueryStats, lexicalTextScore, adaptiveWeights, inferSourceTypeBoost } from './scoring.js';
 import { classifyIntent } from './intent.js';
 import type { QueryIntent } from './intent.js';
-import type { EmbeddingProvider, LlmClient, ChatMessage } from '@memberry/core';
+import type {
+  EmbeddingProvider,
+  LlmClient,
+  ChatMessage,
+} from '@memberry/core';
 import { readEnv } from '@memberry/core';
 import { tenantWhere, resolveTenant, isDefaultTenant, TENANT_PARAM } from '@memberry/neo4j';
+import {
+  RankedRuntimeTraceAdapter,
+  type RuntimeObserved,
+  type RuntimeStructuralCandidateObservation,
+  type RuntimeStructuralChannel,
+  type RuntimeStructuralChannelObservation,
+  type RuntimeStructuralObservation,
+} from './runtime-trace.js';
+import type { RetrievalTraceV1 } from './trace.js';
+import type {
+  RetrievalTraceFailureCode,
+  RetrievalTraceFailureStage,
+  RetrievalTraceIncompleteReason,
+} from './trace.js';
 
 // Tenant-scoped options: RetrievalOptions lives in ./types.js (shared shape), but
 // the assembler threads an optional tenantId through every direct memory/graph
@@ -34,12 +53,25 @@ export interface AssemblerCodeLayer {
   search(query: string, options?: { limit?: number; include_semantics?: boolean; expandedTokens?: string[]; file_path?: string; queryVector?: number[] }): Promise<
     Array<{ id: string; source_type: string; name: string; kind: string; file_path: string; start_line: number; signature: string; doc_comment: string; score: number }>
   >;
+  /** @internal RET-001B1 structural observation; ordinary callers use search(). */
+  searchObserved?(query: string, options?: { limit?: number; include_semantics?: boolean; expandedTokens?: string[]; file_path?: string; queryVector?: number[] }): Promise<RuntimeObserved<
+    Array<{ id: string; source_type: string; name: string; kind: string; file_path: string; start_line: number; signature: string; doc_comment: string; score: number }>
+  >>;
 }
 
 export interface AssemblerMemoryLayer {
   load(scope: { task: string; entities?: string[]; tags?: string[]; max_tokens?: number; tenantId?: string; queryVector?: number[]; temporal?: { time_mode?: string; as_of?: string; from?: string; to?: string; include_invalidated?: boolean } }): Promise<{
     markdown: string; tokens: number; sources: string[];
   }>;
+  /** @internal RET-001B1 fresh path; bypasses memory cache and single-flight. */
+  loadFreshObserved?(scope: { task: string; entities?: string[]; tags?: string[]; max_tokens?: number; tenantId?: string; queryVector?: number[]; temporal?: { time_mode?: string; as_of?: string; from?: string; to?: string; include_invalidated?: boolean } }): Promise<RuntimeObserved<{
+    markdown: string; tokens: number; sources: string[];
+  }>>;
+}
+
+export interface TracedUnifiedContext {
+  context: UnifiedContext;
+  trace: RetrievalTraceV1;
 }
 
 // ─── Dialectic (berry_ask) ─────────────────────────────────────────────────────
@@ -293,20 +325,57 @@ export class UnifiedAssembler {
   }
 
   /**
+   * Ranked-only RET-001B1 instrumentation entrypoint. No MCP/config/registry path
+   * calls this yet; deterministic tracing remains a separate approved packet.
+   */
+  async assembleTraced(
+    task: string,
+    options?: Partial<TenantRetrievalOptions>,
+  ): Promise<TracedUnifiedContext> {
+    const strategy = options?.strategy ?? 'ranked';
+    if (strategy !== 'ranked') throw new Error('assembleTraced supports ranked retrieval only');
+    const opts: TenantRetrievalOptions = {
+      strategy: 'ranked',
+      include_code: options?.include_code ?? true,
+      include_arch: options?.include_arch ?? true,
+      include_memory: options?.include_memory ?? true,
+      max_tokens: options?.max_tokens ?? 8000,
+      entity_scope: options?.entity_scope,
+      tag_scope: options?.tag_scope,
+      project_name: options?.project_name,
+      as_of: options?.as_of,
+      tenantId: resolveTenant(options?.tenantId),
+    };
+    const stageFailures: Array<{ stage: RetrievalTraceFailureStage; code: RetrievalTraceFailureCode }> = [];
+    const getQueryVector = this.makeSharedQueryVector(task, (code) => stageFailures.push({ stage: 'embedding', code }));
+    const result = await this.assembleRankedInternal(task, opts, 'HYBRID', getQueryVector, true, stageFailures);
+    return { context: result.context, trace: result.trace! };
+  }
+
+  /**
    * Build a lazy, memoized embedder for `task` shared across the retrieval channels.
    * The embed fires at most once (first caller), and only if a caller actually needs
    * it. Returns undefined when embeddings are unavailable or the embed fails, so each
    * consumer falls back to its own (skip / self-embed) behaviour — output-identical.
    */
-  private makeSharedQueryVector(task: string): () => Promise<number[] | undefined> {
+  private makeSharedQueryVector(
+    task: string,
+    onFailure?: (code: RetrievalTraceFailureCode) => void,
+  ): () => Promise<number[] | undefined> {
     if (this.embedding.available === false) {
-      return () => Promise.resolve(undefined);
+      let reported = false;
+      return () => {
+        if (!reported) { reported = true; onFailure?.('unavailable'); }
+        return Promise.resolve(undefined);
+      };
     }
     let cached: Promise<number[] | undefined> | undefined;
     return () => {
       if (!cached) {
         cached = this.embedding.embed(task).catch((err) => {
-          console.error('[memberry-retrieval] Shared query embedding failed:', err instanceof Error ? err.message : err);
+          onFailure?.('query-failed');
+          if (onFailure) console.error('[memberry-retrieval] Shared query embedding failed [query-failed]');
+          else console.error('[memberry-retrieval] Shared query embedding failed:', err instanceof Error ? err.message : err);
           return undefined;
         });
       }
@@ -359,7 +428,21 @@ export class UnifiedAssembler {
     intent: QueryIntent = 'HYBRID',
     getQueryVec?: () => Promise<number[] | undefined>,
   ): Promise<UnifiedContext> {
+    return (await this.assembleRankedInternal(task, opts, intent, getQueryVec, false)).context;
+  }
+
+  private async assembleRankedInternal(
+    task: string,
+    opts: TenantRetrievalOptions,
+    intent: QueryIntent,
+    getQueryVec: (() => Promise<number[] | undefined>) | undefined,
+    traced: boolean,
+    stageFailures?: Array<{ stage: RetrievalTraceFailureStage; code: RetrievalTraceFailureCode }>,
+  ): Promise<{ context: UnifiedContext; trace?: RetrievalTraceV1 }> {
     const lists: RetrievalResult[][] = [];
+    const settledLists: Partial<Record<'arch' | 'code' | 'memory', RetrievalResult[]>> | undefined = traced ? {} : undefined;
+    const settledObservations: Partial<Record<'arch' | 'code' | 'memory', RuntimeStructuralObservation>> | undefined = traced ? {} : undefined;
+    const traceIncompleteReasons = traced ? new Set<RetrievalTraceIncompleteReason>() : undefined;
     const tenant = resolveTenant(opts.tenantId);
 
     // Intent-aware query expansion
@@ -372,7 +455,10 @@ export class UnifiedAssembler {
     // running as a sequential tail afterward.
     const boostsPromise: Promise<BoostFactors | undefined> = this.feedback
       .getBoosts(tenant)
-      .catch(() => undefined);
+      .catch(() => {
+        if (traced) stageFailures?.push({ stage: 'feedback', code: 'query-failed' });
+        return undefined;
+      });
     const collectionSizePromise = this.getCollectionSize();
 
     // Gather results from each layer in parallel (individual failures don't crash assembly)
@@ -381,9 +467,33 @@ export class UnifiedAssembler {
     if (opts.include_arch) {
       const archQuery = expansion.expanded.slice(0, 3).join(' OR ');
       promises.push(
-        this.searchArchEntities(archQuery, opts)
-          .then((results) => { lists.push(results); })
-          .catch((err) => { console.error('[memberry-retrieval] Arch search failed:', err instanceof Error ? err.message : err); }),
+        (traced ? this.searchArchEntitiesObserved(archQuery, opts) : this.searchArchEntities(archQuery, opts))
+          .then((result) => {
+            if (traced) {
+              const wrapper = parseRuntimeObservedWrapper(result);
+              if (!wrapper || !Array.isArray(wrapper.value)) {
+                traceIncompleteReasons?.add('candidate-output-gap');
+                settledLists!.arch = [];
+                return;
+              }
+              const results = wrapper.value as RetrievalResult[];
+              settledLists!.arch = results;
+              const observation = parseRuntimeStructuralObservation(wrapper.observation);
+              if (observation && exactFinalIds(results.map((entry) => entry.id), observation.finalIds)) {
+                settledObservations!.arch = observation;
+              } else {
+                traceIncompleteReasons?.add('candidate-output-gap');
+                if (observation) settledObservations!.arch = channelOnlyObservation(observation);
+              }
+            } else lists.push(result as RetrievalResult[]);
+          })
+          .catch((err) => {
+            if (traced) settledObservations!.arch = structuralObservationFromError(err) ?? {
+              channels: [{ channel: 'arch.fulltext', outcome: 'safe-failure', code: 'query-failed' }],
+              candidates: [], finalIds: [],
+            };
+            logRankedFailure(traced, 'Arch search', err);
+          }),
       );
     }
 
@@ -403,45 +513,129 @@ export class UnifiedAssembler {
     // strategy's tenant guard in tools.ts. Default tenant owns the shared/legacy
     // graph, so it keeps the channel.
     if (opts.include_code && this.codeLayer && isDefaultTenant(tenant)) {
+      const codeOptions = {
+        limit: 20,
+        include_semantics: false,
+        expandedTokens: expansion.tokens,
+        ...(codePathScope ? { file_path: codePathScope } : {}),
+        ...(queryVector ? { queryVector } : {}),
+      };
       promises.push(
-        this.codeLayer.search(task, {
-          limit: 20,
-          include_semantics: false,
-          expandedTokens: expansion.tokens,
-          ...(codePathScope ? { file_path: codePathScope } : {}),
-          ...(queryVector ? { queryVector } : {}),
-        })
-          .then((results) => {
-            lists.push(results.map((r) => ({
+        (traced && this.codeLayer.searchObserved
+          ? this.codeLayer.searchObserved(task, codeOptions)
+          : this.codeLayer.search(task, codeOptions))
+          .then((result) => {
+            const wrapper = traced && this.codeLayer!.searchObserved
+              ? parseRuntimeObservedWrapper(result) : undefined;
+            if (traced && this.codeLayer!.searchObserved && (!wrapper || !Array.isArray(wrapper.value))) {
+              traceIncompleteReasons?.add('candidate-output-gap');
+              settledLists!.code = [];
+              return;
+            }
+            const results = wrapper
+              ? wrapper.value as Awaited<ReturnType<AssemblerCodeLayer['search']>>
+              : result as Awaited<ReturnType<AssemblerCodeLayer['search']>>;
+            const mapped = results.map((r) => ({
               id: r.id,
               source_type: 'symbol' as const,
               title: `${r.name} (${r.kind})`,
               content: `**${r.name}** (${r.kind}) — \`${r.file_path}:${r.start_line}\`\n\`${r.signature}\`${r.doc_comment ? '\n> ' + r.doc_comment.split('\n')[0] : ''}`,
               score: r.score,
               metadata: { kind: r.kind, file_path: r.file_path },
-            })));
+            }));
+            if (traced) {
+              settledLists!.code = mapped;
+              if (this.codeLayer!.searchObserved) {
+                const observation = parseRuntimeStructuralObservation(wrapper!.observation);
+                if (observation && exactFinalIds(results.map((entry) => entry.id), observation.finalIds)) {
+                  settledObservations!.code = observation;
+                } else {
+                  traceIncompleteReasons?.add('candidate-output-gap');
+                  if (observation) settledObservations!.code = channelOnlyObservation(observation);
+                }
+              } else traceIncompleteReasons?.add('candidate-output-gap');
+            } else lists.push(mapped);
           })
-          .catch((err) => { console.error('[memberry-retrieval] Code search failed:', err instanceof Error ? err.message : err); }),
+          .catch((err) => {
+            if (traced) settledObservations!.code = structuralObservationFromError(err) ?? {
+              channels: [{ channel: 'code.fulltext', outcome: 'safe-failure', code: 'query-failed' }],
+              candidates: [], finalIds: [],
+            };
+            logRankedFailure(traced, 'Code search', err);
+          }),
       );
     }
 
     if (opts.include_memory && this.memoryLayer) {
+      const memoryScope = {
+        task,
+        entities: opts.entity_scope,
+        tags: memoryTagScope,
+        max_tokens: Math.floor(opts.max_tokens / 3),
+        tenantId: tenant,
+        ...(queryVector ? { queryVector } : {}),
+        ...(opts.as_of ? { temporal: { as_of: opts.as_of } } : {}),
+      };
       promises.push(
-        this.memoryLayer.load({
-          task,
-          entities: opts.entity_scope,
-          tags: memoryTagScope,
-          max_tokens: Math.floor(opts.max_tokens / 3),
-          tenantId: tenant,
-          ...(queryVector ? { queryVector } : {}),
-          ...(opts.as_of ? { temporal: { as_of: opts.as_of } } : {}),
-        })
-          .then((ctx) => { lists.push(parseMemoryMarkdown(ctx.markdown, ctx.sources)); })
-          .catch((err) => { console.error('[memberry-retrieval] Memory layer failed:', err instanceof Error ? err.message : err); }),
+        (traced && this.memoryLayer.loadFreshObserved
+          ? this.memoryLayer.loadFreshObserved(memoryScope)
+          : this.memoryLayer.load(memoryScope))
+          .then((result) => {
+            const wrapper = traced && this.memoryLayer!.loadFreshObserved
+              ? parseRuntimeObservedWrapper(result) : undefined;
+            if (traced && this.memoryLayer!.loadFreshObserved && !wrapper) {
+              traceIncompleteReasons?.add('candidate-output-gap');
+              settledLists!.memory = [];
+              return;
+            }
+            const ctx = wrapper
+              ? wrapper.value as Awaited<ReturnType<AssemblerMemoryLayer['load']>>
+              : result as Awaited<ReturnType<AssemblerMemoryLayer['load']>>;
+            // AMPService prepends an exact presentation-only H1/task block to
+            // its source-final `## [id]` sections. Ordinary assembly retains
+            // the historical parser bytes; traced assembly alone removes that
+            // exact task-bound preamble so it cannot become a fabricated result.
+            const tracedMarkdown = traced
+              ? normalizeTracedMemoryMarkdown(ctx.markdown, task)
+              : ctx.markdown;
+            const parsed = parseMemoryMarkdown(tracedMarkdown, ctx.sources);
+            if (traced) {
+              settledLists!.memory = parsed;
+              if (this.memoryLayer!.loadFreshObserved) {
+                const observation = parseRuntimeStructuralObservation(wrapper!.observation);
+                if (observation && exactFinalIds(ctx.sources, observation.finalIds)) {
+                  const mapped = mapMemoryObservationToOuter(tracedMarkdown, parsed, observation);
+                  settledObservations!.memory = mapped.observation;
+                  if (!mapped.complete) traceIncompleteReasons?.add('candidate-output-gap');
+                } else {
+                  traceIncompleteReasons?.add('candidate-output-gap');
+                  if (observation) settledObservations!.memory = channelOnlyObservation(observation);
+                }
+              } else traceIncompleteReasons?.add('candidate-output-gap');
+            } else lists.push(parsed);
+          })
+          .catch((err) => {
+            if (traced) settledObservations!.memory = structuralObservationFromError(err) ?? {
+              channels: [{ channel: 'memory.scope', outcome: 'safe-failure', code: 'query-failed' }],
+              candidates: [], finalIds: [],
+            };
+            logRankedFailure(traced, 'Memory layer', err);
+          }),
       );
     }
 
     await Promise.all(promises);
+    const observations: RuntimeStructuralObservation[] | undefined = traced ? [] : undefined;
+    if (traced) {
+      // Match the frozen trace channel order so score ties resolve identically
+      // to collector-local refs, independent of async source settlement order.
+      for (const key of ['memory', 'code', 'arch'] as const) {
+        const list = settledLists![key];
+        if (list) lists.push(list);
+        const observation = settledObservations![key];
+        if (observation) observations!.push(observation);
+      }
+    }
 
     // Feedback boosts (non-critical) — already in flight, just await the result
     let boosts: BoostFactors | undefined = await boostsPromise;
@@ -471,30 +665,51 @@ export class UnifiedAssembler {
         );
         return result.score * (1.0 + boost * weights.lexicalTextWeight);
       } catch (err: unknown) {
-        console.error("[assembler] Suppressed error:", err);
+        if (traced) console.error('[memberry-retrieval] Ranked scoring failed [query-failed]');
+        else console.error("[assembler] Suppressed error:", err);
         return result.score; // Non-critical — return unmodified
       }
     };
 
     // Fuse all lists via RRF (dynamic k, normalization, text boost, then MMR diversity)
-    const fused = rrfFusion(lists, 50, 60, boosts, collectionSize, textBoostFn);
+    const traceAdapter = traced ? new RankedRuntimeTraceAdapter(observations!, lists, {
+      includeCode: opts.include_code && this.codeLayer != null && isDefaultTenant(tenant),
+      includeArchitecture: opts.include_arch,
+      includeMemory: opts.include_memory && this.memoryLayer != null,
+      projectScopeApplied: Boolean(opts.project_name || memoryTagScope?.some((tag) => /^project:/i.test(tag))),
+      projectNameApplied: Boolean(opts.project_name),
+      memoryScopeApplied: Boolean(memoryTagScope?.some((tag) => /^project:/i.test(tag))),
+      namedTenant: !isDefaultTenant(tenant),
+      entityCount: opts.entity_scope?.length ?? 0,
+      tagCount: memoryTagScope?.length ?? 0,
+      temporalFilterApplied: Boolean(opts.as_of),
+      query: task,
+      maxTokens: opts.max_tokens,
+    }, traceIncompleteReasons ? [...traceIncompleteReasons] : []) : undefined;
+    if (stageFailures) {
+      for (const failure of stageFailures) traceAdapter?.recordStageFailure(failure.stage, failure.code);
+    }
+    const fused = rrfFusion(lists, 50, 60, boosts, collectionSize, textBoostFn, traceAdapter);
     const deduped = dedup(fused);
+    traceAdapter?.recordDedup(fused.map((result) => result.id), deduped.map((result) => result.id));
 
     // Budget tokens and group by source type
     const sections = groupAndBudget(deduped, opts.max_tokens);
+    traceAdapter?.recordBudget(sections.flatMap((section) => section.items.map((item) => item.id)));
 
     const tokenCount = sections.reduce(
       (sum, s) => sum + s.items.reduce((isum, i) => isum + Math.ceil(i.content.length / 4), 0),
       0,
     );
 
-    return {
+    const context: UnifiedContext = {
       task,
       strategy: 'ranked',
       sections,
       token_count: tokenCount,
       assembled_at: new Date().toISOString(),
     };
+    return { context, ...(traceAdapter ? { trace: traceAdapter.finalize() } : {}) };
   }
 
   // ─── Deterministic assembly ────────────────────────────────────────────
@@ -528,7 +743,23 @@ export class UnifiedAssembler {
   // ─── Arch entity search ────────────────────────────────────────────────
 
   private async searchArchEntities(task: string, opts: TenantRetrievalOptions): Promise<RetrievalResult[]> {
+    return (await this.searchArchEntitiesStandard(task, opts, false)).value;
+  }
+
+  private async searchArchEntitiesObserved(
+    task: string,
+    opts: TenantRetrievalOptions,
+  ): Promise<RuntimeObserved<RetrievalResult[]>> {
+    return this.searchArchEntitiesStandard(task, opts, true);
+  }
+
+  private async searchArchEntitiesStandard(
+    task: string,
+    opts: TenantRetrievalOptions,
+    observed: boolean,
+  ): Promise<RuntimeObserved<RetrievalResult[]>> {
     const session = this.driver.session();
+    const observation: RuntimeStructuralObservation = { channels: [], candidates: [], finalIds: [] };
     try {
       // Fulltext search on entity architectural properties
       const escaped = task
@@ -553,7 +784,7 @@ export class UnifiedAssembler {
         { query: `${escaped}*`, projectName, [TENANT_PARAM]: tenant },
       );
 
-      return result.records.map((r) => {
+      const value = result.records.map((r) => {
         const props = r.get('e').properties as Record<string, unknown>;
         const parts: string[] = [`**${props.name}** (${props.category ?? props.type ?? 'entity'})`];
         if (props.responsibility) parts.push(`Responsibility: ${props.responsibility}`);
@@ -568,9 +799,23 @@ export class UnifiedAssembler {
           metadata: { category: props.category, name: props.name },
         };
       });
+      if (observed) {
+        observation.channels = [{ channel: 'arch.fulltext', outcome: 'success' }];
+        observation.candidates = value.map((candidate, index) => ({
+          privateId: candidate.id,
+          sourceType: 'arch_entity',
+          channels: [{ channel: 'arch.fulltext', rank: index + 1, score: candidate.score }],
+          evidence: {},
+          estimatedTokens: Math.ceil(candidate.content.length / 4),
+        }));
+        observation.finalIds = value.map((candidate) => candidate.id);
+      }
+      return { value, observation };
     } catch (err) {
-      console.error('[memberry-retrieval] Arch entity search failed (index may not exist):', err instanceof Error ? err.message : err);
-      return [];
+      if (observed) console.error('[memberry-retrieval] Arch entity search failed [query-failed]');
+      else console.error('[memberry-retrieval] Arch entity search failed (index may not exist):', err instanceof Error ? err.message : err);
+      if (observed) observation.channels = [{ channel: 'arch.fulltext', outcome: 'safe-failure', code: 'query-failed' }];
+      return { value: [], observation };
     } finally {
       await session.close();
     }
@@ -640,6 +885,266 @@ function normalizeProjectName(projectName?: string): string | null {
   if (!trimmed) return null;
   const withoutPrefix = trimmed.replace(/^project:/i, '').trim();
   return withoutPrefix || null;
+}
+
+/**
+ * Traced-only normalization for AMPService's exact presentation wrapper.
+ * Arbitrary H1s, mismatched task text, aggregate sections, and other markdown
+ * remain untouched and therefore fail closed at the source-final bijection.
+ */
+function normalizeTracedMemoryMarkdown(markdown: string, task: string): string {
+  const exactPreamble = `# Memory Context\n\n**Task:** ${task}\n\n`;
+  if (markdown.startsWith(exactPreamble)) return markdown.slice(exactPreamble.length);
+  const exactEmpty = `# Memory Context\n\n_No relevant memories found for task: ${task}_\n`;
+  return markdown === exactEmpty ? '' : markdown;
+}
+
+function structuralObservationFromError(error: unknown): RuntimeStructuralObservation | undefined {
+  if (typeof error !== 'object' || error === null || isProxy(error)) return undefined;
+  try {
+    const descriptor = Object.getOwnPropertyDescriptor(error, 'observation');
+    if (!descriptor || !('value' in descriptor)) return undefined;
+    return parseRuntimeStructuralObservation(descriptor.value);
+  } catch {
+    return undefined;
+  }
+}
+
+const RUNTIME_CHANNELS = new Set<RuntimeStructuralChannel>([
+  'memory.scope', 'memory.semantic-vector', 'memory.episodic-vector', 'memory.fact', 'memory.block', 'memory.graph',
+  'code.fulltext', 'code.lexical-vector', 'code.dense-vector', 'code.semantic-vector', 'arch.fulltext',
+]);
+const RUNTIME_FAILURE_CODES = new Set<RetrievalTraceFailureCode>([
+  'unavailable', 'timeout', 'query-failed', 'invalid-result',
+]);
+const RUNTIME_SOURCE_TYPES = new Set<RuntimeStructuralCandidateObservation['sourceType']>([
+  'semantic', 'episodic', 'symbol', 'arch_entity', 'aspect', 'fact', 'block',
+]);
+
+function strictDataRecord(
+  value: unknown,
+  allowed: readonly string[],
+  required: readonly string[] = allowed,
+): Record<string, unknown> | undefined {
+  if (typeof value !== 'object' || value === null || isProxy(value) || Array.isArray(value)) return undefined;
+  const prototype = Object.getPrototypeOf(value);
+  if (prototype !== Object.prototype && prototype !== null) return undefined;
+  const keys = Reflect.ownKeys(value);
+  if (keys.some((key) => typeof key !== 'string' || !allowed.includes(key))) return undefined;
+  if (required.some((key) => !keys.includes(key))) return undefined;
+  for (const key of keys) {
+    const descriptor = Object.getOwnPropertyDescriptor(value, key);
+    if (!descriptor || !('value' in descriptor) || !descriptor.enumerable) return undefined;
+  }
+  return value as Record<string, unknown>;
+}
+
+function strictDataArray(value: unknown, maxLength: number): unknown[] | undefined {
+  if (typeof value !== 'object' || value === null || isProxy(value) || !Array.isArray(value)) return undefined;
+  if (Object.getPrototypeOf(value) !== Array.prototype) return undefined;
+  const lengthDescriptor = Object.getOwnPropertyDescriptor(value, 'length');
+  if (!lengthDescriptor || !('value' in lengthDescriptor)
+    || !Number.isSafeInteger(lengthDescriptor.value) || lengthDescriptor.value < 0 || lengthDescriptor.value > maxLength) {
+    return undefined;
+  }
+  const length = lengthDescriptor.value as number;
+  const keys = Reflect.ownKeys(value);
+  if (keys.length !== length + 1 || keys.some((key) => typeof key !== 'string'
+    || (key !== 'length' && (!/^(0|[1-9]\d*)$/.test(key) || Number(key) >= length)))) return undefined;
+  const out: unknown[] = [];
+  for (let index = 0; index < length; index++) {
+    const descriptor = Object.getOwnPropertyDescriptor(value, String(index));
+    if (!descriptor || !('value' in descriptor) || !descriptor.enumerable) return undefined;
+    out.push(descriptor.value);
+  }
+  return out;
+}
+
+function ownData(record: Record<string, unknown>, key: string): unknown {
+  const descriptor = Object.getOwnPropertyDescriptor(record, key);
+  return descriptor && 'value' in descriptor ? descriptor.value : undefined;
+}
+
+function parseRuntimeObservedWrapper(value: unknown): { value: unknown; observation: unknown } | undefined {
+  try {
+    const wrapper = strictDataRecord(value, ['value', 'observation']);
+    if (!wrapper) return undefined;
+    return { value: ownData(wrapper, 'value'), observation: ownData(wrapper, 'observation') };
+  } catch {
+    return undefined;
+  }
+}
+
+function exactFinalIds(actual: readonly unknown[], observed: readonly string[]): boolean {
+  if (actual.length > 512 || actual.length !== observed.length) return false;
+  const seen = new Set<string>();
+  for (let index = 0; index < actual.length; index++) {
+    const id = actual[index];
+    if (!boundedPrivateId(id) || seen.has(id) || observed[index] !== id) return false;
+    seen.add(id);
+  }
+  return true;
+}
+
+function channelOnlyObservation(observation: RuntimeStructuralObservation): RuntimeStructuralObservation {
+  return { channels: observation.channels, candidates: [], finalIds: [] };
+}
+
+function boundedPrivateId(value: unknown): value is string {
+  return typeof value === 'string' && value.length > 0 && value.length <= 512;
+}
+
+function parseRuntimeStructuralObservation(value: unknown): RuntimeStructuralObservation | undefined {
+  try {
+    const root = strictDataRecord(value, ['channels', 'candidates', 'finalIds']);
+    if (!root) return undefined;
+    const rawChannels = strictDataArray(ownData(root, 'channels'), 16);
+    const rawCandidates = strictDataArray(ownData(root, 'candidates'), 512);
+    const rawFinalIds = strictDataArray(ownData(root, 'finalIds'), 512);
+    if (!rawChannels || !rawCandidates || !rawFinalIds) return undefined;
+
+    const channels: RuntimeStructuralChannelObservation[] = [];
+    const channelOutcomes = new Map<RuntimeStructuralChannel, RuntimeStructuralChannelObservation>();
+    for (const raw of rawChannels) {
+      const base = strictDataRecord(raw, ['channel', 'outcome', 'code'], ['channel', 'outcome']);
+      if (!base) return undefined;
+      const channel = ownData(base, 'channel');
+      const outcome = ownData(base, 'outcome');
+      if (typeof channel !== 'string' || !RUNTIME_CHANNELS.has(channel as RuntimeStructuralChannel)
+        || channelOutcomes.has(channel as RuntimeStructuralChannel)) return undefined;
+      let parsed: RuntimeStructuralChannelObservation;
+      if (outcome === 'success') {
+        if (Object.hasOwn(base, 'code')) return undefined;
+        parsed = { channel: channel as RuntimeStructuralChannel, outcome };
+      } else if (outcome === 'safe-failure') {
+        const code = ownData(base, 'code');
+        if (typeof code !== 'string' || !RUNTIME_FAILURE_CODES.has(code as RetrievalTraceFailureCode)) return undefined;
+        parsed = { channel: channel as RuntimeStructuralChannel, outcome, code: code as RetrievalTraceFailureCode };
+      } else return undefined;
+      channels.push(parsed);
+      channelOutcomes.set(parsed.channel, parsed);
+    }
+
+    const candidates: RuntimeStructuralCandidateObservation[] = [];
+    const candidateIds = new Set<string>();
+    for (const raw of rawCandidates) {
+      const candidate = strictDataRecord(raw, ['privateId', 'sourceType', 'channels', 'evidence', 'estimatedTokens']);
+      if (!candidate) return undefined;
+      const privateId = ownData(candidate, 'privateId');
+      const sourceType = ownData(candidate, 'sourceType');
+      const estimatedTokens = ownData(candidate, 'estimatedTokens');
+      if (!boundedPrivateId(privateId) || candidateIds.has(privateId)
+        || typeof sourceType !== 'string' || !RUNTIME_SOURCE_TYPES.has(sourceType as RuntimeStructuralCandidateObservation['sourceType'])
+        || !Number.isSafeInteger(estimatedTokens) || (estimatedTokens as number) < 0 || (estimatedTokens as number) > 1_000_000) {
+        return undefined;
+      }
+      const rawCandidateChannels = strictDataArray(ownData(candidate, 'channels'), 8);
+      const evidenceRecord = strictDataRecord(
+        ownData(candidate, 'evidence'),
+        ['confidence', 'sourceCount', 'superseded', 'invalidated'],
+        [],
+      );
+      if (!rawCandidateChannels || !evidenceRecord) return undefined;
+      const candidateChannels: RuntimeStructuralCandidateObservation['channels'] = [];
+      const seenCandidateChannels = new Set<RuntimeStructuralChannel>();
+      for (const rawChannel of rawCandidateChannels) {
+        const entry = strictDataRecord(rawChannel, ['channel', 'rank', 'score'], ['channel', 'rank']);
+        if (!entry) return undefined;
+        const channel = ownData(entry, 'channel');
+        const rank = ownData(entry, 'rank');
+        const score = ownData(entry, 'score');
+        if (typeof channel !== 'string' || !RUNTIME_CHANNELS.has(channel as RuntimeStructuralChannel)
+          || seenCandidateChannels.has(channel as RuntimeStructuralChannel)
+          || channelOutcomes.get(channel as RuntimeStructuralChannel)?.outcome !== 'success'
+          || !Number.isSafeInteger(rank) || (rank as number) < 1 || (rank as number) > 512
+          || (score !== undefined && (typeof score !== 'number' || !Number.isFinite(score) || Math.abs(score) > 1_000_000))) {
+          return undefined;
+        }
+        candidateChannels.push({
+          channel: channel as RuntimeStructuralChannel,
+          rank: rank as number,
+          ...(score === undefined ? {} : { score }),
+        });
+        seenCandidateChannels.add(channel as RuntimeStructuralChannel);
+      }
+      const confidence = ownData(evidenceRecord, 'confidence');
+      const sourceCount = ownData(evidenceRecord, 'sourceCount');
+      const superseded = ownData(evidenceRecord, 'superseded');
+      const invalidated = ownData(evidenceRecord, 'invalidated');
+      if (confidence !== undefined && (typeof confidence !== 'number' || !Number.isFinite(confidence) || confidence < 0 || confidence > 1)) return undefined;
+      if (sourceCount !== undefined && (!Number.isSafeInteger(sourceCount) || (sourceCount as number) < 0 || (sourceCount as number) > 64)) return undefined;
+      if (superseded !== undefined && typeof superseded !== 'boolean') return undefined;
+      if (invalidated !== undefined && typeof invalidated !== 'boolean') return undefined;
+      candidates.push({
+        privateId,
+        sourceType: sourceType as RuntimeStructuralCandidateObservation['sourceType'],
+        channels: candidateChannels,
+        evidence: {
+          ...(confidence === undefined ? {} : { confidence }),
+          ...(sourceCount === undefined ? {} : { sourceCount: sourceCount as number }),
+          ...(superseded === undefined ? {} : { superseded }),
+          ...(invalidated === undefined ? {} : { invalidated }),
+        },
+        estimatedTokens: estimatedTokens as number,
+      });
+      candidateIds.add(privateId);
+    }
+    const finalIds: string[] = [];
+    const seenFinalIds = new Set<string>();
+    for (const raw of rawFinalIds) {
+      if (!boundedPrivateId(raw) || seenFinalIds.has(raw) || !candidateIds.has(raw)) return undefined;
+      finalIds.push(raw);
+      seenFinalIds.add(raw);
+    }
+    return { channels, candidates, finalIds };
+  } catch {
+    return undefined;
+  }
+}
+
+function mapMemoryObservationToOuter(
+  markdown: string,
+  parsed: readonly RetrievalResult[],
+  observation: RuntimeStructuralObservation,
+): { observation: RuntimeStructuralObservation; complete: boolean } {
+  const sections = markdown.split(/^## /m).filter(Boolean);
+  if (sections.length !== parsed.length || parsed.length !== observation.finalIds.length) {
+    return { observation: channelOnlyObservation(observation), complete: false };
+  }
+  const upstream = new Map(observation.candidates.map((candidate) => [candidate.privateId, candidate]));
+  const mappedCandidates: RuntimeStructuralCandidateObservation[] = [];
+  const mappedFinalIds: string[] = [];
+  const usedSourceIds = new Set<string>();
+  const usedOuterIds = new Set<string>();
+  for (let index = 0; index < parsed.length; index++) {
+    const firstLine = sections[index]?.split('\n')[0] ?? '';
+    const explicit = firstLine.match(/^\[([^\]\r\n]{1,512})\]/)?.[1];
+    const source = explicit ? upstream.get(explicit) : undefined;
+    const outer = parsed[index];
+    if (!source || !outer || explicit !== observation.finalIds[index]
+      || usedSourceIds.has(source.privateId) || usedOuterIds.has(outer.id)) {
+      return { observation: channelOnlyObservation(observation), complete: false };
+    }
+    mappedCandidates.push({
+      ...source,
+      privateId: outer.id,
+      channels: source.channels.map((channel) => ({ ...channel })),
+      evidence: { ...source.evidence },
+      estimatedTokens: Math.ceil(outer.content.length / 4),
+    });
+    mappedFinalIds.push(outer.id);
+    usedSourceIds.add(source.privateId);
+    usedOuterIds.add(outer.id);
+  }
+  return {
+    observation: { channels: observation.channels, candidates: mappedCandidates, finalIds: mappedFinalIds },
+    complete: true,
+  };
+}
+
+function logRankedFailure(traced: boolean, layer: string, error: unknown): void {
+  if (traced) console.error(`[memberry-retrieval] ${layer} failed [query-failed]`);
+  else console.error(`[memberry-retrieval] ${layer} failed:`, error instanceof Error ? error.message : error);
 }
 
 function groupAndBudget(results: RetrievalResult[], maxTokens: number): ContextSection[] {

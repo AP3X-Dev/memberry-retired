@@ -6,6 +6,16 @@ export type { EmbeddingCachePort } from './caching-embedding.js';
 export { rankMemories, rankFacts, budgetTokens, estimateTokens } from './ranking.js';
 export { AMPService } from './service.js';
 export type { RedisLayer, Neo4jLayer, FactLayer, BlocksLayer } from './service.js';
+export type {
+  InternalRetrievalChannel,
+  InternalRetrievalFailureCode,
+  InternalRetrievalChannelObservation,
+  InternalRetrievalCandidateChannel,
+  InternalRetrievalCandidateObservation,
+  InternalRetrievalObservation,
+  InternallyObserved,
+} from './retrieval-observer.js';
+export { InternalObservedRetrievalError } from './retrieval-observer.js';
 export { normalizePredicate, getPredicateSynonyms } from './predicates.js';
 export { ConsolidationEngine } from './consolidation.js';
 export type { ConsolidationRedisLayer, ConsolidationNeo4jLayer, RunResult } from './consolidation.js';

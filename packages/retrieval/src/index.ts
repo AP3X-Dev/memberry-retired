@@ -44,7 +44,7 @@ export type { FeedbackRedisLayer } from './feedback.js';
 
 // Unified assembler
 export { UnifiedAssembler } from './assembler.js';
-export type { AssemblerCodeLayer, AssemblerMemoryLayer } from './assembler.js';
+export type { AssemblerCodeLayer, AssemblerMemoryLayer, TracedUnifiedContext } from './assembler.js';
 
 // Versioned, content-free retrieval trace contract (RET-001A)
 export {

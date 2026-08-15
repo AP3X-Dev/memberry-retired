@@ -275,8 +275,17 @@ export function mmrDiversify(
   ranked: RetrievalResult[],
   k: number = 60,
   lambda: number = 0.7,
+  observer?: RankedMmrObserver,
 ): RetrievalResult[] {
-  if (ranked.length <= 1) return ranked;
+  if (ranked.length <= 1) {
+    if (ranked.length === 1) observer?.({
+      round: 1,
+      selected: ranked[0]!,
+      records: [{ candidate: ranked[0]!, relevance: 1, pairwise: [] }],
+      lambda,
+    });
+    return ranked;
+  }
   k = Math.min(k, ranked.length);
 
   // Bound candidate set to top 200 by relevance to avoid O(n·k) blowup on large inputs
@@ -316,6 +325,16 @@ export function mmrDiversify(
       bestIdx = idx;
     }
   }
+  observer?.({
+    round: 1,
+    selected: ranked[bestIdx]!,
+    records: [...remaining].map((idx) => ({
+      candidate: ranked[idx]!,
+      relevance: relNorm(idx),
+      pairwise: [],
+    })),
+    lambda,
+  });
   selected.push(ranked[bestIdx]);
   selectedIndices.push(bestIdx);
   remaining.delete(bestIdx);
@@ -325,19 +344,29 @@ export function mmrDiversify(
     let bestMmrIdx = -1;
     let bestMmrScore = -Infinity;
 
+    const roundRecords = observer ? [] as RankedMmrObservation['records'] : undefined;
     for (const idx of remaining) {
       const relevance = relNorm(idx);
 
       // Max similarity to any already-selected item (early exit on identical item)
       let maxSim = 0;
+      const pairwise = observer ? [] as Array<{ selected: RetrievalResult; similarity: number }> : undefined;
       for (let si = 0; si < selected.length; si++) {
         const selIdx = selectedIndices[si];
         const sim = fastSimilarity(ranked[idx], selected[si], pathPartsCache[idx], pathPartsCache[selIdx]);
-        if (sim >= 1.0) { maxSim = 1.0; break; } // Identical (same name+file) — max penalty
+        pairwise?.push({ selected: selected[si]!, similarity: sim });
+        if (sim >= 1.0) {
+          maxSim = 1.0;
+          // A trace must carry similarity to every previously selected ref so
+          // replay can derive the maximum independently. Ordinary calls keep
+          // the historical early exit and its exact performance/output.
+          if (!observer) break;
+        } // Identical (same name+file) — max penalty
         if (sim > maxSim) maxSim = sim;
       }
 
       const mmrScore = lambda * relevance - (1 - lambda) * maxSim;
+      roundRecords?.push({ candidate: ranked[idx]!, relevance, pairwise: pairwise ?? [] });
       if (mmrScore > bestMmrScore) {
         bestMmrScore = mmrScore;
         bestMmrIdx = idx;
@@ -345,6 +374,12 @@ export function mmrDiversify(
     }
 
     if (bestMmrIdx === -1) break;
+    observer?.({
+      round: selected.length + 1,
+      selected: ranked[bestMmrIdx]!,
+      records: roundRecords!,
+      lambda,
+    });
     selected.push(ranked[bestMmrIdx]);
     selectedIndices.push(bestMmrIdx);
     remaining.delete(bestMmrIdx);
@@ -359,6 +394,21 @@ export function mmrDiversify(
 
   return selected;
 }
+
+/** @internal Exact bounded inputs used by the ranked MMR implementation. */
+export interface RankedMmrObservation {
+  round: number;
+  selected: RetrievalResult;
+  records: Array<{
+    candidate: RetrievalResult;
+    relevance: number;
+    pairwise: Array<{ selected: RetrievalResult; similarity: number }>;
+  }>;
+  lambda: number;
+}
+
+/** @internal Runtime tracing seam; omitted on every ordinary call. */
+export type RankedMmrObserver = (observation: RankedMmrObservation) => void;
 
 /**
  * Fast similarity using pre-computed path part sets. Used by MMR.

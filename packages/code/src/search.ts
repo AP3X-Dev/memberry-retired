@@ -4,8 +4,34 @@
 
 import neo4j, { type Driver } from 'neo4j-driver';
 import type { CodeSearchResult, CodeContext } from './types.js';
-import type { EmbeddingProvider } from '@memberry/core';
+import type {
+  EmbeddingProvider,
+} from '@memberry/core';
 import { generateLexicalVector } from './vectors.js';
+
+type InternalRetrievalChannel = 'code.fulltext' | 'code.lexical-vector' | 'code.dense-vector' | 'code.semantic-vector';
+type InternalRetrievalChannelObservation =
+  | { channel: InternalRetrievalChannel; outcome: 'success' }
+  | { channel: InternalRetrievalChannel; outcome: 'safe-failure'; code: 'unavailable' | 'timeout' | 'query-failed' | 'invalid-result' };
+interface InternalRetrievalCandidateObservation {
+  privateId: string;
+  sourceType: 'symbol' | 'semantic';
+  channels: Array<{ channel: InternalRetrievalChannel; rank: number; score?: number }>;
+  evidence: { confidence?: number; sourceCount?: number; superseded?: boolean; invalidated?: boolean };
+  estimatedTokens: number;
+}
+interface InternalRetrievalObservation {
+  channels: InternalRetrievalChannelObservation[];
+  candidates: InternalRetrievalCandidateObservation[];
+  finalIds: string[];
+}
+interface InternallyObserved<T> { value: T; observation: InternalRetrievalObservation }
+class InternalObservedSearchError extends Error {
+  constructor(readonly observation: InternalRetrievalObservation, options?: { cause?: unknown }) {
+    super('internal observed code search failed', options);
+    this.name = 'InternalObservedSearchError';
+  }
+}
 
 interface CodeContextFilters {
   language?: string;
@@ -57,8 +83,60 @@ export class CodeSearch {
       queryVector?: number[];
     },
   ): Promise<CodeSearchResult[]> {
+    return this.searchStandard(query, options, false);
+  }
+
+  /** @internal Fresh structural observation for ranked RET-001B tracing. */
+  async searchObserved(
+    query: string,
+    options?: {
+      language?: string;
+      file_path?: string;
+      kind?: string;
+      project_tag?: string;
+      limit?: number;
+      include_semantics?: boolean;
+      expandedTokens?: string[];
+      as_of?: string;
+      queryVector?: number[];
+    },
+  ): Promise<InternallyObserved<CodeSearchResult[]>> {
+    return this.searchStandard(query, options, true);
+  }
+
+  private async searchStandard(
+    query: string,
+    options: Parameters<CodeSearch['search']>[1] | undefined,
+    observed: false,
+  ): Promise<CodeSearchResult[]>;
+  private async searchStandard(
+    query: string,
+    options: Parameters<CodeSearch['search']>[1] | undefined,
+    observed: true,
+  ): Promise<InternallyObserved<CodeSearchResult[]>>;
+  private async searchStandard(
+    query: string,
+    options: {
+      language?: string;
+      file_path?: string;
+      kind?: string;
+      project_tag?: string;
+      limit?: number;
+      include_semantics?: boolean;
+      expandedTokens?: string[];
+      as_of?: string;
+      queryVector?: number[];
+    } | undefined,
+    observed: boolean,
+  ): Promise<CodeSearchResult[] | InternallyObserved<CodeSearchResult[]>> {
     const limit = options?.limit ?? 20;
     const includeSemantics = options?.include_semantics ?? true;
+    const channelOutcomes = observed
+      ? new Map<InternalRetrievalChannel, InternalRetrievalChannelObservation>()
+      : undefined;
+    const settle = observed
+      ? (entry: InternalRetrievalChannelObservation): void => { channelOutcomes!.set(entry.channel, entry); }
+      : undefined;
 
     // OPT-49: embed the query ONCE and share the vector across the two dense
     // channels (symbol + semantic), which each used to embed it separately. The
@@ -74,18 +152,85 @@ export class CodeSearch {
         : this.embedding.available === false ? Promise.resolve(null) : this.embedding.embed(query);
 
     // 4-way parallel: fulltext + dense vector + lexical vector + semantic
-    const [fulltextResults, vectorResults, lexicalResults, semanticResults] = await Promise.all([
-      this.fulltextSearch(options?.expandedTokens?.join(' ') ?? query, limit, options),
-      this.vectorSearch(query, limit, options, queryVectorPromise),
-      this.lexicalVectorSearch(query, limit, options),
-      includeSemantics ? this.semanticVectorSearch(query, limit, options?.as_of, queryVectorPromise) : Promise.resolve([]),
-    ]);
+    const fulltextPromise = this.fulltextSearch(options?.expandedTokens?.join(' ') ?? query, limit, options);
+    const observedFulltextPromise = observed
+      ? fulltextPromise.then(
+          (value) => { settle!({ channel: 'code.fulltext', outcome: 'success' }); return value; },
+          (error) => { settle!({ channel: 'code.fulltext', outcome: 'safe-failure', code: 'query-failed' }); throw error; },
+        )
+      : fulltextPromise;
+    const searches = [
+      observedFulltextPromise,
+      observed
+        ? this.vectorSearch(query, limit, options, queryVectorPromise, settle)
+        : this.vectorSearch(query, limit, options, queryVectorPromise),
+      observed
+        ? this.lexicalVectorSearch(query, limit, options, settle)
+        : this.lexicalVectorSearch(query, limit, options),
+      includeSemantics
+        ? observed
+          ? this.semanticVectorSearch(query, limit, options?.as_of, queryVectorPromise, settle)
+          : this.semanticVectorSearch(query, limit, options?.as_of, queryVectorPromise)
+        : Promise.resolve([]),
+    ] as const;
+    let fulltextResults: CodeSearchResult[];
+    let vectorResults: CodeSearchResult[];
+    let lexicalResults: CodeSearchResult[];
+    let semanticResults: CodeSearchResult[];
+    if (observed) {
+      const settled = await Promise.allSettled(searches);
+      const rejected = settled.find((entry) => entry.status === 'rejected');
+      if (rejected?.status === 'rejected') {
+        throw new InternalObservedSearchError({
+          channels: [...channelOutcomes!.values()], candidates: [], finalIds: [],
+        }, { cause: rejected.reason });
+      }
+      [fulltextResults, vectorResults, lexicalResults, semanticResults] = settled.map(
+        (entry) => (entry as PromiseFulfilledResult<CodeSearchResult[]>).value,
+      ) as [CodeSearchResult[], CodeSearchResult[], CodeSearchResult[], CodeSearchResult[]];
+    } else {
+      [fulltextResults, vectorResults, lexicalResults, semanticResults] = await Promise.all(searches);
+    }
 
     // RRF fusion across all result lists (source_type already set per list)
     const allLists: CodeSearchResult[][] = [fulltextResults, lexicalResults, vectorResults, semanticResults];
     const fused = rrfFusion(allLists, limit);
 
-    return fused;
+    if (!observed) return fused;
+
+    const observation: InternalRetrievalObservation = { channels: [], candidates: [], finalIds: [] };
+    {
+      const channels = [
+        'code.fulltext', 'code.lexical-vector', 'code.dense-vector', 'code.semantic-vector',
+      ] as const;
+      observation.channels = channels.flatMap((channel) => {
+        const entry = channelOutcomes!.get(channel);
+        return entry ? [entry] : [];
+      });
+      const channelLists = [
+        ['code.fulltext', fulltextResults],
+        ['code.lexical-vector', lexicalResults],
+        ['code.dense-vector', vectorResults],
+        ['code.semantic-vector', semanticResults],
+      ] as const;
+      const candidates = new Map<string, InternalRetrievalCandidateObservation>();
+      for (const [channel, results] of channelLists) {
+        results.forEach((result, index) => {
+          const candidate = candidates.get(result.id) ?? {
+            privateId: result.id,
+            sourceType: result.source_type,
+            channels: [],
+            evidence: {},
+            estimatedTokens: Math.ceil((result.signature.length + result.doc_comment.length + 50) / 4),
+          };
+          candidate.channels.push({ channel, rank: index + 1, score: result.score });
+          candidates.set(result.id, candidate);
+        });
+      }
+      observation.candidates = [...candidates.values()];
+      observation.finalIds = fused.map((result) => result.id);
+    }
+    return { value: fused, observation };
   }
 
   /**
@@ -230,10 +375,14 @@ export class CodeSearch {
     limit: number,
     options?: SymbolScopeOptions,
     queryVectorPromise?: Promise<number[] | null>,
+    observe?: (entry: InternalRetrievalChannelObservation) => void,
   ): Promise<CodeSearchResult[]> {
     // No usable embeddings → skip dense vector search; fulltext + deterministic
     // lexical-vector search still run and carry the fused result.
-    if (this.embedding.available === false) return [];
+    if (this.embedding.available === false) {
+      observe?.({ channel: 'code.dense-vector', outcome: 'safe-failure', code: 'unavailable' });
+      return [];
+    }
     try {
       // OPT-49: reuse the query vector search() embedded once; fall back to
       // embedding here for any direct caller that didn't pass one.
@@ -274,12 +423,16 @@ export class CodeSearch {
         if (options?.language) results = results.filter((r) => r.language === options.language);
         if (options?.kind) results = results.filter((r) => r.kind === options.kind);
 
-        return results.slice(0, limit).map(stripScratch);
+        const value = results.slice(0, limit).map(stripScratch);
+        observe?.({ channel: 'code.dense-vector', outcome: 'success' });
+        return value;
       } finally {
         await session.close();
       }
     } catch (err) {
-      console.error('[memberry-code] Symbol vector search failed (falling back to fulltext):', err instanceof Error ? err.message : err);
+      if (observe) console.error('[memberry-code] Symbol vector search failed [query-failed]');
+      else console.error('[memberry-code] Symbol vector search failed (falling back to fulltext):', err instanceof Error ? err.message : err);
+      observe?.({ channel: 'code.dense-vector', outcome: 'safe-failure', code: 'query-failed' });
       return [];
     }
   }
@@ -288,6 +441,7 @@ export class CodeSearch {
     query: string,
     limit: number,
     options?: SymbolScopeOptions,
+    observe?: (entry: InternalRetrievalChannelObservation) => void,
   ): Promise<CodeSearchResult[]> {
     try {
       const lexVec = generateLexicalVector(query);
@@ -323,12 +477,16 @@ export class CodeSearch {
         if (options?.language) results = results.filter((r) => r.language === options.language);
         if (options?.kind) results = results.filter((r) => r.kind === options.kind);
 
-        return results.slice(0, limit).map(stripScratch);
+        const value = results.slice(0, limit).map(stripScratch);
+        observe?.({ channel: 'code.lexical-vector', outcome: 'success' });
+        return value;
       } finally {
         await session.close();
       }
     } catch (err) {
-      console.error('[memberry-code] Lexical vector search failed:', err instanceof Error ? err.message : err);
+      if (observe) console.error('[memberry-code] Lexical vector search failed [query-failed]');
+      else console.error('[memberry-code] Lexical vector search failed:', err instanceof Error ? err.message : err);
+      observe?.({ channel: 'code.lexical-vector', outcome: 'safe-failure', code: 'query-failed' });
       return [];
     }
   }
@@ -338,8 +496,12 @@ export class CodeSearch {
     limit: number,
     asOf?: string,
     queryVectorPromise?: Promise<number[] | null>,
+    observe?: (entry: InternalRetrievalChannelObservation) => void,
   ): Promise<CodeSearchResult[]> {
-    if (this.embedding.available === false) return [];
+    if (this.embedding.available === false) {
+      observe?.({ channel: 'code.semantic-vector', outcome: 'safe-failure', code: 'unavailable' });
+      return [];
+    }
     try {
       // OPT-49: reuse the query vector search() embedded once (shared with the
       // symbol dense channel); fall back to embedding for direct callers.
@@ -359,7 +521,7 @@ export class CodeSearch {
           { limit: neo4j.int(candidateLimit), embedding: queryEmbedding, ...(asOf ? { asOf } : {}) },
         );
 
-        return result.records.map((r) => {
+        const value = result.records.map((r) => {
           const props = r.get('s').properties as Record<string, unknown>;
           return {
             id: props.id as string,
@@ -373,11 +535,15 @@ export class CodeSearch {
             score: (r.get('score') as number) * 0.8, // Slightly discount semantics vs code matches
           };
         }).slice(0, semanticLimit);
+        observe?.({ channel: 'code.semantic-vector', outcome: 'success' });
+        return value;
       } finally {
         await session.close();
       }
     } catch (err) {
-      console.error('[memberry-code] Semantic vector search failed:', err instanceof Error ? err.message : err);
+      if (observe) console.error('[memberry-code] Semantic vector search failed [query-failed]');
+      else console.error('[memberry-code] Semantic vector search failed:', err instanceof Error ? err.message : err);
+      observe?.({ channel: 'code.semantic-vector', outcome: 'safe-failure', code: 'query-failed' });
       return [];
     }
   }
