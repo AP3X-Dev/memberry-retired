@@ -72,6 +72,14 @@ export class TenantAdmin {
     const before = await this.stats(tenant);
     const session = this.driver.session();
     try {
+      // AdmissionObservation is intentionally absent from TenantCounts/export:
+      // it is an internal shadow sidecar, not another memory category. Remove it
+      // before Episodic nodes so OBSERVES never keeps tenant-owned sidecars alive.
+      await session.run(
+        `MATCH (o:AdmissionObservation {tenant_id: $tenant})
+         CALL { WITH o DETACH DELETE o } IN TRANSACTIONS OF 1000 ROWS`,
+        { tenant },
+      );
       for (const label of TENANT_LABELS) {
         // Batch to avoid a huge single transaction on large tenants.
         await session.run(

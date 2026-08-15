@@ -255,6 +255,7 @@ export class BootstrapGraphService {
          OPTIONAL MATCH (ep:Episodic)
          WITH proj, entityCount, agentCount, semCount, count(ep) AS epCount
          OPTIONAL MATCH ()-[r]->()
+         WHERE type(r) <> 'OBSERVES'
          RETURN proj IS NOT NULL AS bootstrapped,
                 entityCount, agentCount, semCount, epCount, count(r) AS relCount`,
         { name: projectName },

@@ -11,6 +11,11 @@ export {
 } from './migrations.js';
 export type { Migration, MigrationResult, VectorIndexDimension } from './migrations.js';
 export { EpisodicStore } from './episodic.js';
+export { AdmissionObservationStore, AdmissionObservationStoreError } from './admission-observation.js';
+export type {
+  AdmissionObservationScopeV1,
+  AdmissionObservationStoreErrorCode,
+} from './admission-observation.js';
 export { SemanticStore } from './semantic.js';
 export { ProvenanceTraversal } from './provenance.js';
 export type { ProvenanceNode } from './provenance.js';

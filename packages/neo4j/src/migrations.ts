@@ -174,6 +174,27 @@ export const MIGRATIONS: Migration[] = [
       }
     },
   },
+  {
+    id: '0007-admission-observation-sidecar',
+    description:
+      'Shadow admission observations: unique internal id and tenant/project lookup index. ' +
+      'No existing memory nodes or relationships are rewritten.',
+    up: async (driver) => {
+      const session = driver.session();
+      try {
+        await session.run(
+          'CREATE CONSTRAINT admission_observation_id IF NOT EXISTS ' +
+          'FOR (o:AdmissionObservation) REQUIRE o.id IS UNIQUE',
+        );
+        await session.run(
+          'CREATE INDEX admission_observation_tenant_project IF NOT EXISTS ' +
+          'FOR (o:AdmissionObservation) ON (o.tenant_id, o.project_scope)',
+        );
+      } finally {
+        await session.close();
+      }
+    },
+  },
 ];
 
 export interface MigrationResult {

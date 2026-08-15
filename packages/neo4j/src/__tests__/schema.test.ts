@@ -46,10 +46,10 @@ describe('Neo4j Schema', () => {
     await initSchema(driver);
     const result = await verifySchema(driver);
 
-    // 9 constraints defined in initSchema (incl. memblock_scope_name_tenant,
-    // fact_id, semantic_dedupe_unique) — floor of 9 so dropping any of them
-    // (e.g. semantic_dedupe_unique) is caught.
-    expect(result.constraintCount).toBeGreaterThanOrEqual(9);
+    // 10 constraints defined in initSchema (incl. memblock_scope_name_tenant,
+    // semantic_dedupe_unique, admission_observation_id) — keep the floor aligned
+    // so dropping a concurrency-critical uniqueness guard is caught.
+    expect(result.constraintCount).toBeGreaterThanOrEqual(10);
     // At least 4 plain indexes + 2 fulltext + 2 vector = 8 indexes
     // (Neo4j also creates backing indexes for constraints, so count may be higher)
     expect(result.indexCount).toBeGreaterThanOrEqual(8);
