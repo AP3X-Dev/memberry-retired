@@ -15,6 +15,10 @@ large public benchmark data cannot be committed accidentally.
 
 The `--network` flag is explicit. CI never uses it.
 
+The bundled admission structural corpus is separately pinned as physical dev
+and holdout `input.jsonl` / scorer-only `oracle.jsonl` pairs. Registered systems
+complete both arms before the runner opens either oracle file.
+
 LongMemEval-S Cleaned and LoCoMo must remain blocked until the `CMP-006A` source,
 license, privacy, revision, size, and SHA-256 requirements in
 [../ROADMAP.md](../ROADMAP.md) are complete. Acquisition success alone does not

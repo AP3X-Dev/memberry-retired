@@ -22,7 +22,7 @@
       "owner": "memory-core",
       "flag": "MEMBERRY_ADMISSION_SHADOW_ENABLED",
       "defaultEnabled": false,
-      "control": "memberry-live-mcp",
+      "control": "memberry-admission-baseline-fixture-v1",
       "rollback": "Set MEMBERRY_ADMISSION_SHADOW_ENABLED=false or unset it, then restart. Baseline episodic writes are unchanged; retain content-free sidecars for audit unless separately authorized tenant-scoped maintenance removes them."
     }
   ]

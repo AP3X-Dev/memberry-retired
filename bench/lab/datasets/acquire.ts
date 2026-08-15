@@ -23,6 +23,7 @@ export interface DatasetArtifact {
 export interface DatasetEntry {
   id: string;
   version: string;
+  suite?: string;
   kind: 'repository' | 'external';
   split: string;
   oracleAccess: string;

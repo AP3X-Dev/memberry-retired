@@ -10,6 +10,15 @@
     { "id": "currentAboveStaleRate", "label": "Current fact above stale fact", "direction": "higher", "unit": "ratio", "requiredInCi": true, "hardGate": true },
     { "id": "staleLeakRate", "label": "Stale leak rate", "direction": "lower", "unit": "ratio", "requiredInCi": true, "hardGate": true },
     { "id": "projectContaminationRate", "label": "Cross-project contamination", "direction": "lower", "unit": "ratio", "requiredInCi": false, "hardGate": true },
-    { "id": "tenantContaminationRate", "label": "Cross-tenant contamination", "direction": "lower", "unit": "ratio", "requiredInCi": false, "hardGate": true }
+    { "id": "tenantContaminationRate", "label": "Cross-tenant contamination", "direction": "lower", "unit": "ratio", "requiredInCi": false, "hardGate": true },
+    { "id": "admissionScenarioCoverage", "label": "Admission structural scenario coverage", "direction": "higher", "unit": "ratio", "requiredInCi": true, "hardGate": true },
+    { "id": "admissionBaselineOutcomeParity", "label": "Admission baseline outcome parity", "direction": "higher", "unit": "ratio", "requiredInCi": true, "hardGate": true },
+    { "id": "admissionBaselineWriteParity", "label": "Admission baseline write parity", "direction": "higher", "unit": "ratio", "requiredInCi": true, "hardGate": true },
+    { "id": "admissionObservationAccuracy", "label": "Admission observation accuracy", "direction": "higher", "unit": "ratio", "requiredInCi": true, "hardGate": true },
+    { "id": "admissionSafeFactsAccuracy", "label": "Admission safe-facts accuracy", "direction": "higher", "unit": "ratio", "requiredInCi": true, "hardGate": true },
+    { "id": "admissionPolicyParity", "label": "Admission baseline policy parity", "direction": "higher", "unit": "ratio", "requiredInCi": true, "hardGate": true },
+    { "id": "admissionDeliveryAccuracy", "label": "Admission sidecar delivery accuracy", "direction": "higher", "unit": "ratio", "requiredInCi": true, "hardGate": true },
+    { "id": "admissionContentLeakRate", "label": "Admission evidence content leak rate", "direction": "lower", "unit": "ratio", "requiredInCi": true, "hardGate": true },
+    { "id": "admissionScopeLeakRate", "label": "Admission observation scope leak rate", "direction": "lower", "unit": "ratio", "requiredInCi": true, "hardGate": true }
   ]
 }

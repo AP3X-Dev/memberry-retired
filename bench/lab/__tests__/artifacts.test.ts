@@ -24,7 +24,7 @@ function manifest() {
     datasetId: 'temporal-isolation-v1',
     datasetHash: '1'.repeat(64),
     configHash: `sha256:${'2'.repeat(64)}`,
-    config: { model: 'fixture', authorization: 'Bearer secret', nested: { api_key: 'secret' } },
+    config: { model: 'fixture', credentials: false, authorization: 'Bearer secret', nested: { api_key: 'secret' } },
     seed: 42,
     controlAdapter: 'scope-aware-bm25-control-v1',
     candidateAdapter: 'memberry-proxy-v1',
@@ -36,7 +36,7 @@ describe('run artifacts', () => {
     const value = manifest();
     expect(value.datasetHash).toBe(`sha256:${'1'.repeat(64)}`);
     expect(value.configHash).toBe(`sha256:${'2'.repeat(64)}`);
-    expect(value.config).toEqual({ model: 'fixture', authorization: '[REDACTED]', nested: { api_key: '[REDACTED]' } });
+    expect(value.config).toEqual({ model: 'fixture', credentials: false, authorization: '[REDACTED]', nested: { api_key: '[REDACTED]' } });
     expect(value.gitDirty).toBe(true);
     expect(() => createRunManifest({ ...value, datasetHash: 'not-a-hash' })).toThrow('datasetHash');
   });

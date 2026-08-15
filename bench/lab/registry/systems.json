@@ -45,6 +45,28 @@
       "requiredInCi": false,
       "adapter": "bench/lab/adapters/memberry-live.ts",
       "capabilities": ["namespaces", "project-scope"]
+    },
+    {
+      "id": "memberry-admission-baseline-fixture-v1",
+      "displayName": "MemBerry admission baseline control",
+      "mode": "fixture",
+      "fidelity": "fixture",
+      "fidelityDetail": "production-core / fixture-persistence",
+      "contract": "admission-structural-v1",
+      "requiredInCi": true,
+      "adapter": "bench/lab/admission/systems.ts",
+      "capabilities": ["baseline-effects", "shadow-observation", "fault-injection", "late-settlement", "tenant-isolation", "pre-redaction", "default-off"]
+    },
+    {
+      "id": "memberry-admission-shadow-fixture-v1",
+      "displayName": "MemBerry admission shadow candidate",
+      "mode": "fixture",
+      "fidelity": "fixture",
+      "fidelityDetail": "production-core / fixture-persistence",
+      "contract": "admission-structural-v1",
+      "requiredInCi": true,
+      "adapter": "bench/lab/admission/systems.ts",
+      "capabilities": ["baseline-effects", "shadow-observation", "fault-injection", "late-settlement", "tenant-isolation", "pre-redaction", "default-off"]
     }
   ]
 }

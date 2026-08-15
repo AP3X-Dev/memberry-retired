@@ -4,6 +4,7 @@
     {
       "id": "memberry-lab-golden-dev",
       "version": "1.0.0",
+      "suite": "retrieval",
       "kind": "repository",
       "split": "dev",
       "oracleAccess": "scorer-only",
@@ -26,6 +27,7 @@
     {
       "id": "memberry-lab-golden-holdout",
       "version": "1.0.0",
+      "suite": "retrieval",
       "kind": "repository",
       "split": "holdout",
       "oracleAccess": "scorer-only",
@@ -43,6 +45,52 @@
       "artifacts": [
         { "role": "input", "access": "adapter", "fileName": "input.jsonl", "repositoryPath": "bench/lab/datasets/golden/v1/holdout/input.jsonl", "hashMode": "text-lf", "sha256": "3b8197347de571ea90885462a4c2264a4e101938dd8222c85bc29879a71183d6", "sizeBytes": 1049 },
         { "role": "oracle", "access": "scorer", "fileName": "oracle.jsonl", "repositoryPath": "bench/lab/datasets/golden/v1/holdout/oracle.jsonl", "hashMode": "text-lf", "sha256": "5d659554013e2da7dc157d8631f27237e3ed9151606e045f9dfe18fbde25f8bb", "sizeBytes": 182 }
+      ]
+    },
+    {
+      "id": "memberry-admission-structural-dev",
+      "version": "1.0.0",
+      "suite": "admission-structural",
+      "kind": "repository",
+      "split": "dev",
+      "oracleAccess": "scorer-only",
+      "requiredInCi": true,
+      "source": { "url": null, "revision": "1.0.0", "path": "bench/lab/datasets/admission/v1/dev" },
+      "license": { "status": "internal", "spdx": null, "url": null, "usage": "repository-tests-only" },
+      "dataPolicy": {
+        "reviewStatus": "verified",
+        "containsPersonalData": false,
+        "containsSecrets": false,
+        "containsCustomerData": false,
+        "exclusions": ["real user memory", "real credentials", "private customer data", "production tenant identifiers"]
+      },
+      "acquisition": { "status": "bundled" },
+      "artifacts": [
+        { "role": "input", "access": "adapter", "fileName": "input.jsonl", "repositoryPath": "bench/lab/datasets/admission/v1/dev/input.jsonl", "hashMode": "text-lf", "sha256": "5e2bcce34d5207aeba33b48f11098c9313bd5032f3b727bf48200b0cb13d88d0", "sizeBytes": 3194 },
+        { "role": "oracle", "access": "scorer", "fileName": "oracle.jsonl", "repositoryPath": "bench/lab/datasets/admission/v1/dev/oracle.jsonl", "hashMode": "text-lf", "sha256": "c3b76a05e95c9f4bf12080efaae2ccb35761a68e3ccfe745aea784a483139a12", "sizeBytes": 2573 }
+      ]
+    },
+    {
+      "id": "memberry-admission-structural-holdout",
+      "version": "1.0.0",
+      "suite": "admission-structural",
+      "kind": "repository",
+      "split": "holdout",
+      "oracleAccess": "scorer-only",
+      "requiredInCi": true,
+      "source": { "url": null, "revision": "1.0.0", "path": "bench/lab/datasets/admission/v1/holdout" },
+      "license": { "status": "internal", "spdx": null, "url": null, "usage": "repository-tests-only" },
+      "dataPolicy": {
+        "reviewStatus": "verified",
+        "containsPersonalData": false,
+        "containsSecrets": false,
+        "containsCustomerData": false,
+        "exclusions": ["real user memory", "real credentials", "private customer data", "production tenant identifiers"]
+      },
+      "acquisition": { "status": "bundled" },
+      "artifacts": [
+        { "role": "input", "access": "adapter", "fileName": "input.jsonl", "repositoryPath": "bench/lab/datasets/admission/v1/holdout/input.jsonl", "hashMode": "text-lf", "sha256": "476aa243f9950a723ad4036ea7339437c0eaf232c6224a5619b947cf53bf8103", "sizeBytes": 4324 },
+        { "role": "oracle", "access": "scorer", "fileName": "oracle.jsonl", "repositoryPath": "bench/lab/datasets/admission/v1/holdout/oracle.jsonl", "hashMode": "text-lf", "sha256": "3aa928df64c96659c1cca15fc6d15ba1e9f884fb64d65cb50394f6765da1cdc3", "sizeBytes": 2620 }
       ]
     },
     {

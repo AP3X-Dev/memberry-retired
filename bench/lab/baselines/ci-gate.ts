@@ -6,6 +6,7 @@ import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { runQualityGate, type QualityGateReport } from '../../quality/eval.js';
+import { runAdmissionStructuralCiGate } from '../admission/ci-gate.js';
 import { createRunManifest } from '../artifacts.js';
 import { RETRIEVAL_SCENARIOS } from '../fixtures/retrieval.js';
 import { TEMPORAL_ISOLATION_SCENARIOS } from '../fixtures/temporal-isolation.js';
@@ -25,22 +26,31 @@ export function requireGateResult<T>(name: string, result: T | null | undefined)
   if (result === null || result === undefined) throw new Error(`Required gate ${name} did not return a result; refusing to skip`);
   return result;
 }
-
 export async function runDeterministicCiGate(
   qualityRunner: () => Promise<QualityGateReport> = runQualityGate,
 ): Promise<{ passed: true; artifacts: string[] }> {
-  const registryErrors = await validateRegistries(resolve(REPO_ROOT, 'bench', 'lab', 'registry'));
-  if (registryErrors.length > 0) throw new Error(`Registry gate failed:\n${registryErrors.join('\n')}`);
-  const baseline = await loadAndVerifyBaseline(undefined, undefined, REPO_ROOT);
-  const candidate = requireGateResult('quality', await qualityRunner());
-  const policy = await loadComparisonPolicy();
-  const comparison = requireGateResult('comparison', compareQualityReports(baseline, candidate, policy));
-  if (!comparison.passed) throw new Error(`Baseline comparison failed:\n${comparison.failures.join('\n')}`);
-
   const sourceCommit = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: REPO_ROOT, encoding: 'utf8' }).trim();
   const dirty = execFileSync('git', ['status', '--porcelain'], { cwd: REPO_ROOT, encoding: 'utf8' }).trim().length > 0;
   const startedAt = new Date().toISOString();
   const runId = `ci-${sourceCommit.slice(0, 12)}-${process.pid}-${startedAt.replace(/[:.]/g, '-')}`;
+  // Run the sibling production-core structural boundary before loading the
+  // retrieval adapter graph. This keeps each independently audited dynamic
+  // system graph isolated under tsx as well as Node's native ESM loader.
+  const admission = requireGateResult('admission-structural', await runAdmissionStructuralCiGate({
+    runId: `${runId}-admission`,
+    createdAt: startedAt,
+    gitCommit: sourceCommit,
+    // Both structural arms execute this exact production-core commit; the
+    // historical quality baseline above is a separate retrieval artifact.
+    baselineCommit: sourceCommit,
+    gitDirty: dirty,
+    repoRoot: REPO_ROOT,
+    artifactRoot: ARTIFACT_DIR,
+  }));
+  console.log('Evaluation-lab gate: admission structural evidence published.');
+  const registryErrors = await validateRegistries(resolve(REPO_ROOT, 'bench', 'lab', 'registry'));
+  if (registryErrors.length > 0) throw new Error(`Registry gate failed:\n${registryErrors.join('\n')}`);
+  console.log('Evaluation-lab gate: registries verified.');
   const labPolicy = JSON.parse(await readFile(resolve(HERE, 'lab-policy.json'), 'utf8')) as {
     schemaVersion: number;
     registeredGolden: LabGatePolicy;
@@ -48,6 +58,13 @@ export async function runDeterministicCiGate(
     migratedRetrievalControl: LabGatePolicy;
   };
   if (labPolicy.schemaVersion !== 1) throw new Error('Unsupported lab policy version');
+  const baseline = await loadAndVerifyBaseline(undefined, undefined, REPO_ROOT);
+  console.log('Evaluation-lab gate: immutable baseline verified.');
+  const candidate = requireGateResult('quality', await qualityRunner());
+  const policy = await loadComparisonPolicy();
+  const comparison = requireGateResult('comparison', compareQualityReports(baseline, candidate, policy));
+  if (!comparison.passed) throw new Error(`Baseline comparison failed:\n${comparison.failures.join('\n')}`);
+  console.log('Evaluation-lab gate: quality comparison complete.');
   const [goldenScenarios, goldenDev, goldenHoldout, temporalDataset, retrievalDataset] = await Promise.all([
     loadRegisteredScenariosForScoring(REPO_ROOT),
     loadRegisteredDatasetDescriptor('memberry-lab-golden-dev', REPO_ROOT),
@@ -55,6 +72,7 @@ export async function runDeterministicCiGate(
     loadRegisteredDatasetDescriptor('memberry-lab-temporal-isolation', REPO_ROOT),
     loadRegisteredDatasetDescriptor('memberry-lab-migrated-retrieval', REPO_ROOT),
   ]);
+  console.log('Evaluation-lab gate: registered datasets verified.');
   const goldenComparison = requireGateResult('registered-golden', await compareRegisteredAdapters({
     runId: `${runId}-golden`,
     controlId: 'scope-aware-bm25-control-v1',
@@ -66,6 +84,7 @@ export async function runDeterministicCiGate(
   if (!goldenComparison.passed) {
     throw new Error(`Registered golden dataset gate failed:\n${goldenComparison.failures.map((failure) => `${failure.metric}: ${failure.actual}; ${failure.expected}`).join('\n')}`);
   }
+  console.log('Evaluation-lab gate: registered golden comparison complete.');
   const protectedComparison = requireGateResult('protected-temporal-isolation', await compareRegisteredAdapters({
     runId: `${runId}-protected`,
     controlId: 'scope-aware-bm25-control-v1',
@@ -77,6 +96,7 @@ export async function runDeterministicCiGate(
   if (!protectedComparison.passed) {
     throw new Error(`Protected temporal/isolation gate failed:\n${protectedComparison.failures.map((failure) => `${failure.metric}: ${failure.actual}; ${failure.expected}`).join('\n')}`);
   }
+  console.log('Evaluation-lab gate: protected comparison complete.');
   const retrievalComparison = requireGateResult('migrated-retrieval', await compareRegisteredAdapters({
     runId: `${runId}-retrieval`,
     controlId: 'scope-aware-bm25-control-v1',
@@ -88,6 +108,7 @@ export async function runDeterministicCiGate(
   if (!retrievalComparison.passed) {
     throw new Error(`Migrated retrieval no-regression gate failed:\n${retrievalComparison.failures.map((failure) => `${failure.metric}: ${failure.actual}; ${failure.expected}`).join('\n')}`);
   }
+  console.log('Evaluation-lab gate: retrieval comparison complete.');
   const goldenDatasetHash = canonicalSha256([
     { id: goldenDev.id, version: goldenDev.version, split: goldenDev.split, hash: goldenDev.hash },
     { id: goldenHoldout.id, version: goldenHoldout.version, split: goldenHoldout.split, hash: goldenHoldout.hash },
@@ -133,15 +154,15 @@ export async function runDeterministicCiGate(
   const goldenPaths = await writeRequiredCiComparisonArtifacts(resolve(ARTIFACT_DIR, goldenComparison.runId), goldenComparison, goldenManifest);
   const protectedPaths = await writeRequiredCiComparisonArtifacts(resolve(ARTIFACT_DIR, protectedComparison.runId), protectedComparison, protectedManifest);
   const retrievalPaths = await writeRequiredCiComparisonArtifacts(resolve(ARTIFACT_DIR, retrievalComparison.runId), retrievalComparison, retrievalManifest);
+  console.log('Evaluation-lab gate: retrieval artifacts published.');
   console.log(`Evaluation-lab deterministic gate passed against ${baseline.id}.`);
   for (const metric of comparison.metrics) console.log(`- ${metric.metric}: ${metric.candidate} (baseline ${metric.baseline}, delta ${metric.delta})`);
   console.log(`Registered golden artifact: ${goldenPaths.manifest}`);
   console.log(`Protected artifact: ${protectedPaths.manifest}`);
   console.log(`Retrieval evidence artifact: ${retrievalPaths.manifest}`);
+  console.log(`Admission structural artifact: ${admission.artifacts.manifest}`);
   console.log(`Known retrieval answer coverage remains visible at ${retrievalComparison.candidate.metrics.answerCoverage}; promotion work must improve it without regressing safety.`);
-  return { passed: true, artifacts: [goldenPaths.manifest, protectedPaths.manifest, retrievalPaths.manifest] };
+  return { passed: true, artifacts: [goldenPaths.manifest, protectedPaths.manifest, retrievalPaths.manifest, admission.artifacts.manifest] };
 }
 
-if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
-  runDeterministicCiGate().catch((error) => { console.error(error instanceof Error ? error.message : error); process.exitCode = 1; });
-}
+// The executable wrapper is bench/lab/ci.mts.

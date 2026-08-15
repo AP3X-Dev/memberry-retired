@@ -16,7 +16,8 @@ export function normalizeSha256(value: string, label = 'hash'): string {
 }
 
 export function redactConfig(value: unknown, key = ''): unknown {
-  if (SECRET_KEY.test(key)) return '[REDACTED]';
+  // Negative capability attestations are safe provenance, not credentials.
+  if (SECRET_KEY.test(key)) return value === false ? false : '[REDACTED]';
   if (Array.isArray(value)) return value.map((entry) => redactConfig(entry));
   if (value && typeof value === 'object') {
     return Object.fromEntries(Object.entries(value as Record<string, unknown>)
@@ -81,6 +82,55 @@ export function createRunManifest(input: Omit<RunManifest, 'schemaVersion' | 'ru
   };
 }
 
+export interface EvaluationArtifactOptions<T> {
+  jsonFile: `${string}.json`;
+  markdownFile: `${string}.md`;
+  renderMarkdown(report: T, manifest: RunManifest): string;
+}
+
+function safeArtifactName(value: string, extension: '.json' | '.md'): boolean {
+  return /^[a-z0-9][a-z0-9._-]*$/i.test(value)
+    && value.endsWith(extension)
+    && !value.includes('..');
+}
+
+/** Shared atomic writer for retrieval and sibling structural evidence. */
+export async function writeEvaluationArtifacts<T>(
+  directory: string,
+  report: T,
+  manifest: RunManifest,
+  options: EvaluationArtifactOptions<T>,
+): Promise<{ json: string; markdown: string; manifest: string }> {
+  if (!safeArtifactName(options.jsonFile, '.json') || !safeArtifactName(options.markdownFile, '.md')) {
+    throw new Error('artifact file names must be safe JSON/Markdown basenames');
+  }
+  const parent = dirname(directory);
+  const temporary = join(parent, `.${manifest.runId}.tmp-${process.pid}-${randomUUID()}`);
+  await mkdir(parent, { recursive: true });
+  await mkdir(temporary);
+  const temporaryPaths = {
+    json: join(temporary, options.jsonFile),
+    markdown: join(temporary, options.markdownFile),
+    manifest: join(temporary, 'manifest.json'),
+  };
+  try {
+    await Promise.all([
+      writeFile(temporaryPaths.json, `${JSON.stringify(report, null, 2)}\n`, 'utf8'),
+      writeFile(temporaryPaths.markdown, options.renderMarkdown(report, manifest), 'utf8'),
+      writeFile(temporaryPaths.manifest, `${JSON.stringify(manifest, null, 2)}\n`, 'utf8'),
+    ]);
+    await rename(temporary, directory);
+  } catch (error) {
+    await rm(temporary, { recursive: true, force: true });
+    throw error;
+  }
+  return {
+    json: join(directory, options.jsonFile),
+    markdown: join(directory, options.markdownFile),
+    manifest: join(directory, 'manifest.json'),
+  };
+}
+
 /**
  * Publishes a complete immutable run directory atomically. Existing run IDs fail
  * closed rather than being partially overwritten or mixed with stale evidence.
@@ -90,29 +140,9 @@ export async function writeComparisonArtifacts(
   report: ComparisonReport,
   manifest: RunManifest,
 ): Promise<{ json: string; markdown: string; manifest: string }> {
-  const parent = dirname(directory);
-  const temporary = join(parent, `.${manifest.runId}.tmp-${process.pid}-${randomUUID()}`);
-  await mkdir(parent, { recursive: true });
-  await mkdir(temporary);
-  const temporaryPaths = {
-    json: join(temporary, 'comparison.json'),
-    markdown: join(temporary, 'comparison.md'),
-    manifest: join(temporary, 'manifest.json'),
-  };
-  try {
-    await Promise.all([
-      writeFile(temporaryPaths.json, `${JSON.stringify(report, null, 2)}\n`, 'utf8'),
-      writeFile(temporaryPaths.markdown, renderComparisonMarkdown(report, manifest), 'utf8'),
-      writeFile(temporaryPaths.manifest, `${JSON.stringify(manifest, null, 2)}\n`, 'utf8'),
-    ]);
-    await rename(temporary, directory);
-  } catch (error) {
-    await rm(temporary, { recursive: true, force: true });
-    throw error;
-  }
-  return {
-    json: join(directory, 'comparison.json'),
-    markdown: join(directory, 'comparison.md'),
-    manifest: join(directory, 'manifest.json'),
-  };
+  return writeEvaluationArtifacts(directory, report, manifest, {
+    jsonFile: 'comparison.json',
+    markdownFile: 'comparison.md',
+    renderMarkdown: renderComparisonMarkdown,
+  });
 }

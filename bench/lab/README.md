@@ -13,6 +13,13 @@ MCP environments.
 | `proxy` | Fast candidate inner loop | Deterministic behavior of the proxy only |
 | `live` | MCP + Redis + Neo4j integration | The exercised production path |
 
+Admission-policy evidence is a sibling structural suite, not a retrieval
+adapter. Its registered fixture systems execute the real `AMPService.store`,
+`AdmissionShadowRuntime`, trusted admission preprocessor, parser, and baseline
+policy with deterministic in-memory persistence. Its fidelity is reported
+exactly as `production-core / fixture-persistence`; it does not claim live Neo4j
+or MCP coverage.
+
 Proxy scores are never labeled as live MemBerry results. An unsupported capability,
 adapter failure, and a real zero score are separate outcomes. Empty responses fail
 the joint recall and answer-coverage gates and cannot earn stale/isolation credit.
@@ -83,6 +90,11 @@ npm run bench:lab:baseline:verify
 npm run bench:lab:ci
 ```
 
+The deterministic CI command also runs all 11 admission structural dev/holdout
+cases offline under the Node 20/22 unit matrix. It hard-gates scenario coverage,
+baseline outcome/write parity, observation/safe-facts/policy/delivery accuracy at
+`1`, and content/scope leakage at `0`.
+
 The CLI also supports `--suite protected|retrieval|all`,
 `--split dev|holdout|all`, `--run-id`, and `--output`. The migrated retrieval suite
 retains known baseline weaknesses honestly; use it for comparison evidence rather
@@ -139,9 +151,10 @@ packets and approvals are complete.
 
 ```text
 bench/lab/
+  admission/    production-core structural runner and registered fixture systems
   adapters/     frozen controls, proxy candidate, opt-in live MCP adapter
   baselines/    immutable pre-lab manifest, lock, comparison policy
-  contracts/    versioned adapter, scenario, report, and manifest contracts
+  contracts/    versioned retrieval and sibling structural evidence contracts
   datasets/     synthetic input/oracle splits and registry-driven acquisition
   fixtures/     committed protected and migrated behavioral scenarios
   registry/     datasets, systems, metrics, and default-off experiments

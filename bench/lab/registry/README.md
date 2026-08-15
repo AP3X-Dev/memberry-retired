@@ -14,6 +14,12 @@ Rules:
   prerequisite never becomes a skip or a zero score.
 - Experiments are default-off and declare owner, control, and rollback.
 - `fidelity` distinguishes proxy, fixture, and live evidence.
+- Required datasets are validated as one immutable dev and one immutable
+  holdout split per suite, so a new structural suite cannot shadow or replace
+  the retrieval corpus.
+- Admission structural systems use the sibling `admission-structural-v1`
+  contract and exact `production-core / fixture-persistence` fidelity. They may
+  not be substituted with a proxy adapter.
 
 LongMemEval-S Cleaned and LoCoMo are intentionally registered as blocked. Their
 metadata makes future work visible without claiming reproducibility that has

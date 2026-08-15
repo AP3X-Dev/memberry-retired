@@ -102,3 +102,20 @@ test('a combined dev+holdout dataset cannot bypass physical split separation in 
   const errors = validateDatasetRegistry(registry);
   assert.ok(errors.some((error) => error.includes('requiredInCi split must be exactly dev or holdout')));
 });
+
+test('each required suite fails closed without exactly one physical dev and holdout split', async () => {
+  const registry = await json('datasets.json') as { datasets: Array<Record<string, unknown>> };
+  registry.datasets = registry.datasets.filter((dataset) => dataset.id !== 'memberry-admission-structural-holdout');
+  const errors = validateDatasetRegistry(registry);
+  assert.ok(errors.some((error) => error.includes('admission-structural requires exactly one immutable required CI holdout split')));
+});
+
+test('admission structural systems cannot substitute proxy or wrong-fidelity registrations', async () => {
+  const registry = await json('systems.json') as { systems: Array<Record<string, unknown>> };
+  const system = registry.systems.find((entry) => entry.id === 'memberry-admission-shadow-fixture-v1')!;
+  system.adapter = 'bench/lab/admission/proxy.ts';
+  system.fidelity = 'proxy';
+  const errors = validateSystemRegistry(registry);
+  assert.ok(errors.some((error) => error.includes('admission structural required systems must be fixture fidelity')));
+  assert.ok(errors.some((error) => error.includes('cannot be proxies')));
+});

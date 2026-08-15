@@ -16,6 +16,7 @@ const ORACLE_KEYS = new Set(['oracle', 'relevant', 'required', 'stale', 'forbidd
 export interface RegisteredDatasetDescriptor {
   id: string;
   version: string;
+  suite?: string;
   split: string;
   hash: string;
   inputArtifacts: Array<{ path: string; sha256: string }>;
@@ -65,6 +66,7 @@ export async function verifyRegisteredDataset(
   return {
     id: dataset.id,
     version: dataset.version,
+    ...(dataset.suite ? { suite: dataset.suite } : {}),
     split: dataset.split,
     hash,
     inputArtifacts: artifacts.filter(({ role, access }) => role === 'input' && access === 'adapter').map(({ path, sha256 }) => ({ path, sha256 })),
@@ -72,11 +74,15 @@ export async function verifyRegisteredDataset(
   };
 }
 
-export async function loadRegisteredDatasetDescriptor(datasetId: string, repoRoot = DEFAULT_REPO_ROOT): Promise<RegisteredDatasetDescriptor> {
+export async function loadRegisteredDatasetDescriptor(
+  datasetId: string,
+  repoRoot = DEFAULT_REPO_ROOT,
+  verifyAccess: 'adapter' | 'all' = 'all',
+): Promise<RegisteredDatasetDescriptor> {
   const registry = await readRegistry(repoRoot);
   const dataset = registry.datasets.find(({ id }) => id === datasetId);
   if (!dataset) throw new Error(`Unknown registered dataset: ${datasetId}`);
-  return verifyRegisteredDataset(dataset, repoRoot);
+  return verifyRegisteredDataset(dataset, repoRoot, verifyAccess);
 }
 
 async function parseJsonLines<T>(path: string): Promise<T[]> {
@@ -101,7 +107,9 @@ function assertAdapterVisibleOnly(value: unknown, path = 'input'): void {
 
 async function requiredGoldenDescriptors(repoRoot: string, verifyAccess: 'adapter' | 'all' = 'all'): Promise<RegisteredDatasetDescriptor[]> {
   const registry = await readRegistry(repoRoot);
-  const required = registry.datasets.filter((dataset) => dataset.requiredInCi && (dataset.split === 'dev' || dataset.split === 'holdout'));
+  const required = registry.datasets.filter((dataset) => dataset.requiredInCi
+    && dataset.suite === 'retrieval'
+    && (dataset.split === 'dev' || dataset.split === 'holdout'));
   if (required.filter(({ split }) => split === 'dev').length !== 1 || required.filter(({ split }) => split === 'holdout').length !== 1) {
     throw new Error('Exactly one required registered dev dataset and one required registered holdout dataset are required');
   }

@@ -5,6 +5,17 @@ be forgotten. A blocked dataset remains visible here and in
 `registry/datasets.json`; it must never be treated as an executed benchmark, an
 unsupported zero, or a silently skipped gate.
 
+## Admission shadow evidence
+
+`MEM-001D1` is the offline structural packet. It exercises the production core
+store and admission runtime with deterministic fixture persistence, physical
+dev/holdout input-oracle separation, exact hard metrics, and content-free atomic
+artifacts through `npm run bench:lab:ci`.
+
+`MEM-001D2` remains deferred. It must add disposable live Neo4j/MCP structural
+evidence and hosted artifacts without relabeling D1 as live, weakening the
+offline gate, or touching production data.
+
 ## External memory benchmark activation
 
 **Roadmap target:** Phase 10, work package `CMP-006`, after phase gates G2

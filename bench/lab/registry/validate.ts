@@ -53,6 +53,7 @@ export function validateDatasetRegistry(value: unknown): string[] {
     keys.add(key);
     if (dataset.kind !== 'repository' && dataset.kind !== 'external') errors.push(`${at}.kind must be repository or external`);
     if (typeof dataset.requiredInCi !== 'boolean') errors.push(`${at}.requiredInCi must be boolean`);
+    if (dataset.requiredInCi === true && !validId(dataset.suite)) errors.push(`${at}.suite is required for required CI data`);
 
     const source = object(dataset.source);
     if (!source) errors.push(`${at}.source must be an object`);
@@ -153,11 +154,19 @@ export function validateDatasetRegistry(value: unknown): string[] {
       if (input && oracle && input.repositoryPath === oracle.repositoryPath) errors.push(`${at} input and oracle must be physically separate`);
     }
   }
-  if (!items.some((raw) => { const item = object(raw); return item?.split === 'dev' && item.requiredInCi === true; })) {
-    errors.push('registry requires an immutable required CI dev split');
+  const requiredBySuite = new Map<string, JsonObject[]>();
+  for (const raw of items) {
+    const item = object(raw);
+    if (item?.requiredInCi !== true || !validId(item.suite)) continue;
+    requiredBySuite.set(item.suite, [...(requiredBySuite.get(item.suite) ?? []), item]);
   }
-  if (!items.some((raw) => { const item = object(raw); return item?.split === 'holdout' && item.requiredInCi === true; })) {
+  if (requiredBySuite.size === 0) {
+    errors.push('registry requires an immutable required CI dev split');
     errors.push('registry requires an immutable required CI holdout split');
+  }
+  for (const [suite, datasets] of requiredBySuite) {
+    if (datasets.filter(({ split }) => split === 'dev').length !== 1) errors.push(`${suite} requires exactly one immutable required CI dev split`);
+    if (datasets.filter(({ split }) => split === 'holdout').length !== 1) errors.push(`${suite} requires exactly one immutable required CI holdout split`);
   }
   return errors;
 }
@@ -220,6 +229,11 @@ export function validateSystemRegistry(value: unknown): string[] {
     if (!nonBlank(system.adapter)) errors.push(`${at}.adapter must be non-empty`);
     if (!Array.isArray(system.capabilities) || system.capabilities.some((capability) => !nonBlank(capability))) {
       errors.push(`${at}.capabilities must be an array of non-empty strings`);
+    }
+    if (system.contract === 'admission-structural-v1') {
+      if (system.mode !== 'fixture' || system.fidelity !== 'fixture') errors.push(`${at} admission structural required systems must be fixture fidelity`);
+      if (system.fidelityDetail !== 'production-core / fixture-persistence') errors.push(`${at}.fidelityDetail must name production-core / fixture-persistence`);
+      if (String(system.adapter).toLowerCase().includes('proxy')) errors.push(`${at} admission structural systems cannot be proxies`);
     }
   }
   return errors;
