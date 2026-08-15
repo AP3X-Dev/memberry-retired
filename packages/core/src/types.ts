@@ -190,6 +190,8 @@ export interface AMPConfig {
   readonly?: boolean;
   /** When true, episode content/task is secret-redacted before persistence. Set via MEMBERRY_REDACT_ON_INGEST. */
   redactOnIngest?: boolean;
+  /** Default-off MEM-001 shadow observation wiring; never changes admission. */
+  admissionShadow?: { enabled: boolean; timeoutMs: number };
   /**
    * Per-task chat-completion model selection (see packages/core/src/llm.ts).
    * Omitted keys fall back to DEFAULT_MODELS. Sourced from AMP_MODEL_* env vars.

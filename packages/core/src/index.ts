@@ -29,6 +29,25 @@ export { DreamEngine } from './dream.js';
 export type { DreamFactLayer, DreamGraphLayer, DreamResult, DreamEngineDeps } from './dream.js';
 export { createCoreServices, buildDreamEngine, buildExtractionConsumer } from './services-factory.js';
 export type { CoreServices, CoreServicesEnv } from './services-factory.js';
+export {
+  ADMISSION_SHADOW_DEFAULT_TIMEOUT_MS,
+  ADMISSION_SHADOW_MAX_TIMEOUT_MS,
+  ADMISSION_SHADOW_MAX_IN_FLIGHT,
+  ADMISSION_SHADOW_MAX_DRAIN_MS,
+  AdmissionShadowConfigError,
+  AdmissionShadowRuntime,
+  resolveAdmissionShadowConfig,
+} from './admission-shadow.js';
+export type {
+  AdmissionObservationScope,
+  AdmissionObservationSink,
+  AdmissionShadowAttempt,
+  AdmissionShadowAppendResult,
+  AdmissionShadowConfig,
+  AdmissionShadowHook,
+  AdmissionShadowFailureCode,
+  AdmissionShadowSnapshot,
+} from './admission-shadow.js';
 export { ExtractionConsumer } from './extraction-consumer.js';
 export type { ExtractionQueuePort, ExtractionConsumerOptions, QueuedJob } from './extraction-consumer.js';
 export {

@@ -5,6 +5,7 @@ import { z } from 'zod';
 import { DistributedLock, ProposalStore } from '@memberry/redis';
 import { runMigrations, checkVectorIndexDimensions, ProvenanceTraversal } from '@memberry/neo4j';
 import { ConsolidationEngine, BootstrapGraphService, createCoreServices, buildDreamEngine, buildExtractionConsumer, readEnv, defaultExportPath, DEFAULT_TENANT } from '@memberry/core';
+import type { CoreServices } from '@memberry/core';
 import { setServiceInstances, setTenantContainer } from './tools.js';
 import {
   initResearchSchema,
@@ -72,6 +73,7 @@ import {
   GitHubCliProvider,
   setGraphServiceInstances,
 } from '@memberry/graph';
+import { registerAdmissionShadowStatusSources } from './admission-shadow-status.js';
 
 export interface BootstrapHandles {
   /** Call to disconnect Redis and Neo4j cleanly. */
@@ -576,7 +578,7 @@ export async function bootstrap(): Promise<BootstrapHandles> {
   // MEMBERRY_TENANT_DATASTORES = {"acme":{"neo4jUri":"bolt://...","neo4jPassword":"...","redisUrl":"redis://..."}}
   // Tenants listed here get their OWN Neo4j/Redis (physical isolation); all other
   // tenants share this instance with a tenant_id filter (logical isolation).
-  const dedicatedTenantCores: Array<{ close(): Promise<void> }> = [];
+  const dedicatedTenantCores: Array<Pick<CoreServices, 'close' | 'admissionShadow'>> = [];
   const dedicatedTenantCoordinators: ConsolidationCoordinator[] = [];
   const tenantDatastores = parseTenantDatastores(readEnv('MEMBERRY_TENANT_DATASTORES'));
   {
@@ -675,6 +677,13 @@ export async function bootstrap(): Promise<BootstrapHandles> {
     console.error('[memberry-mcp] All services initialized — fully operational');
   }
 
+  // Register only after bootstrap has succeeded so an initialization failure
+  // cannot leave stale process-global readiness sources behind.
+  const unregisterAdmissionShadowStatus = registerAdmissionShadowStatusSources([
+    core.admissionShadow,
+    ...dedicatedTenantCores.map((tenantCore) => tenantCore.admissionShadow),
+  ]);
+
   return {
     async shutdown() {
       try { await consolidationCoordinator.stop(); } catch { /* best-effort */ }
@@ -684,8 +693,11 @@ export async function bootstrap(): Promise<BootstrapHandles> {
       try { await extractionConsumer.stop(); } catch { /* best-effort */ }
       for (const tc of dedicatedTenantCores) { try { await tc.close(); } catch { /* already closed */ } }
       try { codeWatcherService.stopAll(); } catch { /* best-effort */ }
-      try { await redis.quit(); } catch { /* already closed */ }
-      try { await driver.close(); } catch { /* already closed */ }
+      // Core close drains admission sidecars for at most one second before the
+      // shared Neo4j driver is closed, then preserves the existing Redis/driver
+      // best-effort shutdown behavior.
+      try { await core.close(); } catch { /* already closed */ }
+      unregisterAdmissionShadowStatus();
     },
   };
 }

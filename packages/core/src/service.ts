@@ -24,6 +24,8 @@ import { normalizePredicate } from './predicates.js';
 import { CARD_BLOCK_NAMES, DEFAULT_TENANT } from './types.js';
 import { redactSecrets } from './redact.js';
 import { readEnv } from './config/settings.js';
+import type { AdmissionObservationV1 } from './admission.js';
+import type { AdmissionShadowAttempt, AdmissionShadowHook } from './admission-shadow.js';
 
 // ─── Dependency interfaces (injected, not concrete imports) ──────────────────
 
@@ -173,6 +175,7 @@ export class AMPService {
     private config: AMPConfig,
     blocks?: BlocksLayer,
     private audit?: AuditSink,
+    private admissionShadow?: AdmissionShadowHook,
   ) {
     this.blocks = blocks;
   }
@@ -544,15 +547,41 @@ export class AMPService {
       throw new Error('MemBerry is in read-only mode (MEMBERRY_READONLY=true); berry_store is disabled.');
     }
 
+    let preRedactionTaskForShadow: string | undefined;
+    let preRedactionContentForShadow: string | undefined;
+
     // 0b. Secret redaction at the ingest boundary (opt-in). Redacting before
     // hashing/embedding/persistence keeps credentials out of the store entirely
     // rather than relying on export-time redaction as the only defense.
     if (this.config.redactOnIngest) {
-      input = {
-        ...input,
-        content: redactSecrets(input.content),
-        ...(input.task ? { task: redactSecrets(input.task) } : {}),
-      };
+      if (this.admissionShadow) {
+        // Preserve the baseline caller-object read order exactly: spread first,
+        // then content, then the task condition and (when truthy) task again.
+        // Shadow sensitivity reuses those exact redaction inputs and performs
+        // no additional caller-object read.
+        const copied = { ...input };
+        const rawContent = input.content;
+        const redactedContent = redactSecrets(rawContent);
+        const taskCondition = input.task;
+        let taskOverride: { task: string } | undefined;
+        if (taskCondition) {
+          const rawTask = input.task;
+          preRedactionTaskForShadow = rawTask;
+          taskOverride = { task: redactSecrets(rawTask) };
+        }
+        preRedactionContentForShadow = rawContent;
+        input = {
+          ...copied,
+          content: redactedContent,
+          ...(taskOverride ?? {}),
+        };
+      } else {
+        input = {
+          ...input,
+          content: redactSecrets(input.content),
+          ...(input.task ? { task: redactSecrets(input.task) } : {}),
+        };
+      }
     }
 
     // Resolve the tenant before target validation so existence checks and graph
@@ -577,10 +606,29 @@ export class AMPService {
       return { id: '', duplicate: true };
     }
 
+    let shadowAttempt: AdmissionShadowAttempt | null = null;
+    let successfulId = '';
+    let successfulScope = '';
+    let successfulNode: EpisodicNode | undefined;
+    let successfulHasEntities = false;
+    let successfulHasModel = false;
+
     // From here the dedup key is MARKED. If persistence fails we must release it
     // (unmark) before rethrowing, otherwise a retry of identical content would be
     // silently swallowed as a duplicate for the 24h TTL — losing the memory.
     try {
+    // Reserve capacity after accepted dedup and before embedding. No
+    // preprocessing happens yet: all safe facts are derived at the terminal
+    // seam from values the baseline itself read and persisted.
+    if (this.admissionShadow) {
+      try {
+        shadowAttempt = this.admissionShadow.begin();
+      } catch {
+        try { shadowAttempt?.cancel(); } catch { /* hostile shadow dependency */ }
+        shadowAttempt = null;
+      }
+    }
+
     // 2. Generate embedding. Caching lives in the injected provider
     // (CachingEmbeddingProvider over the shared Redis EmbeddingCache; see
     // services-factory). A manual cache layer here was redundant — same sha256
@@ -625,23 +673,30 @@ export class AMPService {
     // it (behavior preserved). Signals stay a separate step (5) — they carry
     // Redis side-effects that can't join the Neo4j transaction.
     if (this.neo4j.episodic.createWithLinks) {
-      await this.neo4j.episodic.createWithLinks(node, {
+      const links = {
         agentId: input.agent_id,
         ...(input.entities ? { entityIds: input.entities } : {}),
         ...(input.model_id ? { modelId: input.model_id } : {}),
-      });
+      };
+      successfulHasEntities = (links.entityIds?.length ?? 0) > 0;
+      successfulHasModel = links.modelId !== undefined;
+      await this.neo4j.episodic.createWithLinks(node, links);
     } else {
       await this.neo4j.episodic.create(node);
       const linkPromises: Promise<unknown>[] = [
         this.neo4j.episodic.linkToAgent(id, input.agent_id),
       ];
       if (input.entities) {
-        for (const entityId of input.entities) {
+        const entities = input.entities;
+        successfulHasEntities = entities.length > 0;
+        for (const entityId of entities) {
           linkPromises.push(this.neo4j.episodic.linkToEntity(id, entityId));
         }
       }
       if (input.model_id) {
-        linkPromises.push(this.neo4j.episodic.linkToModel(id, input.model_id));
+        const modelId = input.model_id;
+        successfulHasModel = true;
+        linkPromises.push(this.neo4j.episodic.linkToModel(id, modelId));
       }
       await Promise.all(linkPromises);
     }
@@ -706,8 +761,11 @@ export class AMPService {
       }).catch(() => { /* AuditLogStore already logs; never fail store() */ });
     }
 
-    return { id, duplicate: false };
+    successfulId = id;
+    successfulScope = scope ?? '';
+    successfulNode = node;
     } catch (err) {
+      try { shadowAttempt?.cancel(); } catch { /* never replace baseline failure */ }
       // Persistence failed after the dedup key was marked. Release the key so a
       // retry of the same content is NOT treated as a duplicate, then rethrow the
       // ORIGINAL error unchanged (never swallow it). Best-effort: if unmark itself
@@ -719,6 +777,45 @@ export class AMPService {
       }
       throw err;
     }
+
+    // Absolute terminal side effect. It is intentionally OUTSIDE the baseline
+    // try/catch so preparation, capacity, timeout, proxy, and sink failures can
+    // never unmark dedup or alter a successful episode result.
+    if (shadowAttempt && successfulNode) {
+      try {
+        const preparedObservation: AdmissionObservationV1 | null = shadowAttempt.prepare({
+          captureState: 'accepted-nonduplicate',
+          task: this.config.redactOnIngest
+            ? preRedactionTaskForShadow ?? successfulNode.task
+            : successfulNode.task,
+          content: this.config.redactOnIngest
+            ? preRedactionContentForShadow ?? ''
+            : successfulNode.content,
+          ...(successfulNode.tags !== undefined ? { tags: successfulNode.tags } : {}),
+          ...(successfulNode.scope !== undefined ? { scope: successfulNode.scope } : {}),
+          tenantId: successfulNode.tenant_id ?? tenantId,
+          redactionConfigured: this.config.redactOnIngest === true,
+          ...(successfulNode.memory_type !== undefined ? { memoryType: successfulNode.memory_type } : {}),
+          ...(successfulNode.outcome !== undefined ? { outcome: successfulNode.outcome } : {}),
+          hasSignals: (successfulNode.signals?.length ?? 0) > 0,
+          hasEntities: successfulHasEntities,
+          hasModel: successfulHasModel,
+        });
+        if (preparedObservation) {
+          await shadowAttempt.append({
+            tenantId,
+            projectScope: successfulScope,
+            episodeId: successfulId,
+          }, preparedObservation);
+        } else shadowAttempt.cancel();
+      } catch {
+        try { shadowAttempt.cancel(); } catch { /* hostile shadow dependency */ }
+        // Structural dependency is hostile-safe even if it violates its own
+        // never-reject contract.
+      }
+    }
+
+    return { id: successfulId, duplicate: false };
   }
 
   /**

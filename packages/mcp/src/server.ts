@@ -17,6 +17,7 @@ import { registerWikiTools, WIKI_TOOL_NAMES } from '@memberry/wiki';
 import { registerGraphTools, GRAPH_TOOL_NAMES } from '@memberry/graph';
 import { readEnv, resolvePort } from '@memberry/core';
 import { getConsolidationAutomationHealth } from './consolidation-coordinator.js';
+import { getAdmissionShadowProcessStatus } from './admission-shadow-status.js';
 
 // ─── Public types ─────────────────────────────────────────────────────────────
 
@@ -637,7 +638,10 @@ export function createAMPServer(): AMPMCPServer {
 
           // ── Authenticated readiness check ────────────────────────────────
           if (req.method === 'GET' && pathname === '/readyz') {
-            const body = statusPayload('ready');
+            const body: Record<string, unknown> = {
+              ...statusPayload('ready'),
+              admission_shadow: getAdmissionShadowProcessStatus(),
+            };
             const automation = body['consolidation_automation'] as { unhealthy?: boolean };
             // During startup grace and while bounded retries are pending the
             // service remains ready. Only stale/exhausted enabled automation is

@@ -1,7 +1,14 @@
 import { afterEach, describe, expect, it } from 'vitest';
 import { createCoreServices } from '../services-factory.js';
 
-const managedEnv = ['MEMBERRY_CONSOLIDATION_AUTO_APPLY', 'NEO4J_URI', 'NEO4J_USER', 'REDIS_URL'] as const;
+const managedEnv = [
+  'MEMBERRY_CONSOLIDATION_AUTO_APPLY',
+  'MEMBERRY_ADMISSION_SHADOW_ENABLED',
+  'MEMBERRY_ADMISSION_SHADOW_TIMEOUT_MS',
+  'NEO4J_URI',
+  'NEO4J_USER',
+  'REDIS_URL',
+] as const;
 const originalEnv = Object.fromEntries(managedEnv.map((name) => [name, process.env[name]]));
 
 afterEach(() => {
@@ -12,6 +19,33 @@ afterEach(() => {
   }
 });
 describe('createCoreServices consolidation policy config', () => {
+  it('keeps admission observation default-off with a 50ms bound', async () => {
+    delete process.env.MEMBERRY_ADMISSION_SHADOW_ENABLED;
+    delete process.env.MEMBERRY_ADMISSION_SHADOW_TIMEOUT_MS;
+    const core = createCoreServices();
+    try {
+      expect(core.config.admissionShadow).toEqual({ enabled: false, timeoutMs: 50 });
+      expect(core.admissionShadow.snapshot()).toMatchObject({ enabled: false, maxInFlight: 32 });
+    } finally {
+      await core.close();
+    }
+  });
+
+  it('requires strict explicit admission shadow configuration', async () => {
+    process.env.MEMBERRY_ADMISSION_SHADOW_ENABLED = 'true';
+    process.env.MEMBERRY_ADMISSION_SHADOW_TIMEOUT_MS = '75';
+    const core = createCoreServices();
+    try {
+      expect(core.config.admissionShadow).toEqual({ enabled: true, timeoutMs: 75 });
+      expect(core.admissionShadow.snapshot().enabled).toBe(true);
+    } finally {
+      await core.close();
+    }
+    expect(core.admissionShadow.snapshot()).toMatchObject({ stopping: true, inFlight: 0 });
+
+    process.env.MEMBERRY_ADMISSION_SHADOW_ENABLED = '1';
+    expect(() => createCoreServices()).toThrowError('admission_shadow_config:invalid_enabled');
+  });
   it('keeps the library-safe review-first default', async () => {
     const core = createCoreServices();
     try {

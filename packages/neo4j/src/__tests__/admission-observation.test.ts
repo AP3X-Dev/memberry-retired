@@ -419,9 +419,8 @@ describe('AdmissionObservationStore MEM-001B', () => {
     expect(fake.executeWrite).not.toHaveBeenCalled();
   });
 
-  it('keeps the sidecar outside product composition and retrieval surfaces', () => {
+  it('keeps the sidecar outside product retrieval and publication surfaces', () => {
     for (const relative of [
-      'packages/core/src/services-factory.ts',
       'packages/neo4j/src/provenance.ts',
       'packages/retrieval/src/index.ts',
       'packages/wiki/src/index.ts',
@@ -431,6 +430,11 @@ describe('AdmissionObservationStore MEM-001B', () => {
       const source = readFileSync(resolve(REPO_ROOT, relative), 'utf8');
       expect(source).not.toMatch(/AdmissionObservationStore|OBSERVES/);
     }
+
+    // MEM-001C may construct the B sink only at the core dependency root; the
+    // sidecar remains absent from retrieval, graph, provenance, and wiki code.
+    const factory = readFileSync(resolve(REPO_ROOT, 'packages/core/src/services-factory.ts'), 'utf8');
+    expect(factory).toContain('new AdmissionObservationStore(driver)');
 
     const bootstrap = readFileSync(resolve(REPO_ROOT, 'packages/core/src/bootstrap-graph.ts'), 'utf8');
     expect(bootstrap).toContain("WHERE type(r) <> 'OBSERVES'");

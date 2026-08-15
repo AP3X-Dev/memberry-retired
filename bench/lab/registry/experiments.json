@@ -16,6 +16,14 @@
       "defaultEnabled": false,
       "control": "memberry-proxy-v1",
       "rollback": "Unset MEMBERRY_LAB_LIVE and retain the isolated synthetic scope for audit. Any later tenant-scoped maintenance requires separate authorization."
+    },
+    {
+      "id": "admission-shadow-baseline-parity-v1",
+      "owner": "memory-core",
+      "flag": "MEMBERRY_ADMISSION_SHADOW_ENABLED",
+      "defaultEnabled": false,
+      "control": "memberry-live-mcp",
+      "rollback": "Set MEMBERRY_ADMISSION_SHADOW_ENABLED=false or unset it, then restart. Baseline episodic writes are unchanged; retain content-free sidecars for audit unless separately authorized tenant-scoped maintenance removes them."
     }
   ]
 }

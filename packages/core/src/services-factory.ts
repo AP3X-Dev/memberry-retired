@@ -28,6 +28,7 @@ import {
   ScopedQuery,
   FactStore,
   AuditLogStore,
+  AdmissionObservationStore,
   BlockStore as Neo4jBlockStore,
 } from '@memberry/neo4j';
 import { AMPService } from './service.js';
@@ -40,6 +41,7 @@ import { DreamEngine, type DreamGraphLayer, type DreamBlockLayer } from './dream
 import { ExtractionConsumer } from './extraction-consumer.js';
 import { EMBEDDING_DIM, type EmbeddingProvider, type AMPConfig } from './types.js';
 import { readEnv, defaultExportPath } from './config/settings.js';
+import { AdmissionShadowRuntime, resolveAdmissionShadowConfig } from './admission-shadow.js';
 
 export interface CoreServicesEnv {
   neo4jUri?: string;
@@ -81,6 +83,8 @@ export interface CoreServices {
   config: AMPConfig;
   ampService: AMPService;
   memoryBlocks: MemoryBlockService;
+  /** Process-local default-off MEM-001 shadow runtime and secret-free status source. */
+  admissionShadow: AdmissionShadowRuntime;
   /** Disconnect Redis and close the Neo4j driver. Best-effort. */
   close(): Promise<void>;
 }
@@ -124,6 +128,9 @@ function disabledEmbedding(): EmbeddingProvider {
  */
 export function createCoreServices(env: CoreServicesEnv = {}): CoreServices {
   const { neo4jUri, neo4jUser, neo4jPassword, redisUrl, openaiKey, exportPath } = resolveEnv(env);
+  // Strict shadow configuration is validated before allocating clients so a
+  // malformed opt-in cannot leak partially constructed Redis/Neo4j handles.
+  const admissionShadowConfig = resolveAdmissionShadowConfig();
 
   const redis = createRedisClient(redisUrl);
   const driver = createNeo4jDriver(neo4jUri, neo4jUser, neo4jPassword);
@@ -176,7 +183,6 @@ export function createCoreServices(env: CoreServicesEnv = {}): CoreServices {
   const autoApplyConsolidation = ['1', 'true', 'yes', 'on'].includes(
     (readEnv('MEMBERRY_CONSOLIDATION_AUTO_APPLY') ?? '').trim().toLowerCase(),
   );
-
   const config: AMPConfig = {
     redis: { url: redisUrl },
     neo4j: { uri: neo4jUri, user: neo4jUser, password: neo4jPassword },
@@ -186,6 +192,7 @@ export function createCoreServices(env: CoreServicesEnv = {}): CoreServices {
     exportPath,
     readonly: readonlyMode,
     redactOnIngest,
+    admissionShadow: admissionShadowConfig,
     ...(Object.keys(models).length > 0 ? { models } : {}),
   };
 
@@ -201,6 +208,10 @@ export function createCoreServices(env: CoreServicesEnv = {}): CoreServices {
   };
   const memoryBlocks = new MemoryBlockService(redisBlockStore, neo4jBlockStore, cacheInvalidator, readonlyMode);
   const audit = new AuditLogStore(driver);
+  const admissionShadow = new AdmissionShadowRuntime({
+    ...admissionShadowConfig,
+    ...(admissionShadowConfig.enabled ? { sink: new AdmissionObservationStore(driver) } : {}),
+  });
 
   const ampService = new AMPService(
     { cache, embeddings, dedup, signals, queue, extraction: extractionQueue },
@@ -209,6 +220,7 @@ export function createCoreServices(env: CoreServicesEnv = {}): CoreServices {
     config,
     memoryBlocks,
     audit,
+    admissionShadowConfig.enabled ? admissionShadow : undefined,
   );
 
   return {
@@ -231,7 +243,9 @@ export function createCoreServices(env: CoreServicesEnv = {}): CoreServices {
     config,
     ampService,
     memoryBlocks,
+    admissionShadow,
     async close() {
+      try { await admissionShadow.stopAndDrain(); } catch { /* bounded and best-effort */ }
       try { await redis.quit(); } catch { /* already closed */ }
       try { await driver.close(); } catch { /* already closed */ }
     },

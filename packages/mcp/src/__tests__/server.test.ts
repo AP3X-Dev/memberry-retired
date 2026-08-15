@@ -9,6 +9,7 @@ import {
   DEFAULT_HTTP_KEEPALIVE_TIMEOUT_MS,
 } from '../server.js';
 import { TOOL_NAMES, DOMAIN_TOOL_NAMES_MAP, ALWAYS_ON_TOOL_NAMES } from '../tools.js';
+import { registerAdmissionShadowStatusSource } from '../admission-shadow-status.js';
 
 async function withSseServer(run: (baseUrl: string) => Promise<void>): Promise<void> {
   const previousToken = process.env.AMP_API_TOKEN;
@@ -138,6 +139,7 @@ describe('createAMPServer', () => {
       expect(body.uptime_ms).toEqual(expect.any(Number));
       expect(body.token).toBeUndefined();
       expect(body.authorization).toBeUndefined();
+      expect(body.admission_shadow).toBeUndefined();
     });
   });
 
@@ -158,8 +160,64 @@ describe('createAMPServer', () => {
         transport: 'sse',
         active_sessions: 0,
         auth_required: true,
+        admission_shadow: {
+          enabled: false,
+          health: 'disabled',
+          affects_readiness: false,
+          timeout_ms: [],
+          max_in_flight: 0,
+        },
       });
     });
+  });
+
+  it('keeps readiness at 200 when the optional shadow observer is degraded', async () => {
+    const unregister = registerAdmissionShadowStatusSource({
+      snapshot: () => ({
+        enabled: true,
+        health: 'degraded',
+        prepared: 1,
+        preparationFailures: 0,
+        appendAttempts: 1,
+        appended: 0,
+        appendFailures: 1,
+        timedOut: 0,
+        capacityRejected: 0,
+        shutdownSkipped: 0,
+        lateAppended: 0,
+        lateFailures: 0,
+        reserved: 0,
+        inFlight: 0,
+        stopping: false,
+        lastFailureCode: 'append_failed',
+        timeoutMs: 50,
+        maxInFlight: 32,
+      }),
+    });
+    try {
+      await withSseServer(async (baseUrl) => {
+        const response = await fetch(`${baseUrl}/readyz`, {
+          headers: { authorization: 'Bearer test-health-token' },
+        });
+        expect(response.status).toBe(200);
+        await expect(response.json()).resolves.toMatchObject({
+          admission_shadow: {
+            health: 'degraded',
+            affects_readiness: false,
+            durable_retry: false,
+            self_healing: false,
+            history_complete: false,
+            history_scope: 'process-lifetime',
+            stopping: false,
+            last_failure_code: 'append_failed',
+            timeout_ms: [50],
+            max_in_flight: 32,
+          },
+        });
+      });
+    } finally {
+      unregister();
+    }
   });
 
   it('accepts any configured per-actor token and rejects unknown ones', async () => {

@@ -71,6 +71,10 @@ describe('resolveNumber precedence (env > file > default)', () => {
 });
 
 describe('getConfigStatus source attribution', () => {
+  it('does not expose admission shadow configuration through wiki settings', () => {
+    expect(getConfigStatus().server).not.toHaveProperty('admissionShadow');
+  });
+
   it('reports default before any save', () => {
     expect(getConfigStatus().hookTuning.timeoutMs).toEqual({ value: 800, source: 'default' });
   });

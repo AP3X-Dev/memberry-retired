@@ -52,7 +52,21 @@ MEMBERRY_CONSOLIDATION_ENABLED=true
 MEMBERRY_CONSOLIDATION_AUTO_APPLY=true
 MEMBERRY_WIKI_AUTOREFRESH=true
 MEMBERRY_WIKI_OUTPUT_DIR=<INSTALL_DIR>/wiki
+MEMBERRY_ADMISSION_SHADOW_ENABLED=false
+MEMBERRY_ADMISSION_SHADOW_TIMEOUT_MS=50
 ```
+
+`MEMBERRY_ADMISSION_SHADOW_ENABLED=true` records content-free baseline-parity
+recommendations after successful episodic stores. It is default-off, bounded to
+32 unresolved writes and a 50ms wait by default, and has no retry or repair loop.
+A process crash between the episode commit and sidecar commit can leave a gap.
+Authenticated `/readyz` reports process-lifetime counters, stopping/skipped
+shutdown work, and a closed failure code; it explicitly reports that history is
+incomplete, durable retry and self-healing are false, and never returns 503 only
+because this optional observer is degraded. Shutdown stops new observations,
+drains already-started writes for at most one second, then closes the driver.
+Rollback is to set the flag to `false` (or unset it) and restart; existing
+sidecars remain inert audit evidence and are not deleted automatically.
 
 Lock it down — it holds secrets:
 
