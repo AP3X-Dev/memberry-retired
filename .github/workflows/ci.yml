@@ -108,12 +108,14 @@ jobs:
             "${RUNNER_TEMP}/memberry-admission-candidate-live" \
             "${RUNNER_TEMP}/memberry-retrieval-scope-live" \
             "${RUNNER_TEMP}/memberry-retrieval-planner-live" \
+            "${RUNNER_TEMP}/memberry-candidate-channel-live" \
             "${RUNNER_TEMP}/memberry-admission-live-composition" \
             "${RUNNER_TEMP}/memberry-retrieval-trace-live-conformance"
           chmod 0700 \
             "${RUNNER_TEMP}/memberry-admission-candidate-live" \
             "${RUNNER_TEMP}/memberry-retrieval-scope-live" \
             "${RUNNER_TEMP}/memberry-retrieval-planner-live" \
+            "${RUNNER_TEMP}/memberry-candidate-channel-live" \
             "${RUNNER_TEMP}/memberry-admission-live-composition" \
             "${RUNNER_TEMP}/memberry-retrieval-trace-live-conformance"
           printf '{"repository":"%s","sha":"%s","run_id":"%s","run_attempt":"%s"}\n' \
@@ -123,6 +125,8 @@ jobs:
             "${RUNNER_TEMP}/memberry-retrieval-scope-live/workflow.json"
           cp "${RUNNER_TEMP}/memberry-admission-candidate-live/workflow.json" \
             "${RUNNER_TEMP}/memberry-retrieval-planner-live/workflow.json"
+          cp "${RUNNER_TEMP}/memberry-admission-candidate-live/workflow.json" \
+            "${RUNNER_TEMP}/memberry-candidate-channel-live/workflow.json"
           cp "${RUNNER_TEMP}/memberry-admission-candidate-live/workflow.json" \
             "${RUNNER_TEMP}/memberry-admission-live-composition/workflow.json"
           cp "${RUNNER_TEMP}/memberry-admission-candidate-live/workflow.json" \
@@ -163,6 +167,31 @@ jobs:
           check_planner_value '1.0' '1.0'
           check_planner_value 'true' 'true'
           check_planner_value '1 ' '1 '
+          check_candidate_value() {
+            local input="$1"
+            local expected="$2"
+            local rendered
+            if [[ "$input" == '__UNSET__' ]]; then
+              rendered="$(env -u MEMBERRY_CANDIDATE_CHANNEL_V1 docker compose --env-file /dev/null --profile app --profile wiki config --format json)"
+            else
+              rendered="$(MEMBERRY_CANDIDATE_CHANNEL_V1="$input" docker compose --env-file /dev/null --profile app --profile wiki config --format json)"
+            fi
+            COMPOSE_JSON="$rendered" EXPECTED="$expected" node <<'NODE'
+          const config = JSON.parse(process.env.COMPOSE_JSON);
+          const expected = process.env.EXPECTED;
+          const mcpValue = config?.services?.mcp?.environment?.MEMBERRY_CANDIDATE_CHANNEL_V1;
+          const wikiEnvironment = config?.services?.wiki?.environment ?? {};
+          if (typeof mcpValue !== 'string' || mcpValue !== expected) process.exit(1);
+          if (Object.hasOwn(wikiEnvironment, 'MEMBERRY_CANDIDATE_CHANNEL_V1')) process.exit(1);
+          NODE
+          }
+          check_candidate_value '__UNSET__' ''
+          check_candidate_value '' ''
+          check_candidate_value '1' '1'
+          check_candidate_value '01' '01'
+          check_candidate_value '1.0' '1.0'
+          check_candidate_value 'true' 'true'
+          check_candidate_value '1 ' '1 '
 
       - name: Install dependencies
         run: npm ci
@@ -277,6 +306,52 @@ jobs:
         with:
           name: memberry-retrieval-planner-live-${{ github.run_id }}-${{ github.run_attempt }}
           path: ${{ runner.temp }}/memberry-retrieval-planner-live
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Candidate-channel runtime required live evidence
+        if: always()
+        shell: bash
+        env:
+          NEO4J_URI: bolt://localhost:7687
+          NEO4J_USER: neo4j
+          NEO4J_PASSWORD: testpassword
+          MEMBERRY_RET003B_LIVE_MODE: required
+          MEMBERRY_RET003B_DISPOSABLE_OPT_IN: "1"
+          MEMBERRY_RET003B_EVIDENCE_PATH: ${{ runner.temp }}/memberry-candidate-channel-live/evidence.json
+          MEMBERRY_RET003B_DEDICATED_NEO4J_URI: bolt://127.0.0.1:17687
+        run: |
+          set -euo pipefail
+          evidence_dir="${RUNNER_TEMP}/memberry-candidate-channel-live"
+          neo4j_container_id="${{ job.services.neo4j.id }}"
+          neo4j_image_sha256="$(docker inspect --format='{{.Image}}' "$neo4j_container_id")"
+          [[ "$neo4j_container_id" =~ ^[0-9a-f]{64}$ ]]
+          [[ "$neo4j_image_sha256" =~ ^sha256:[0-9a-f]{64}$ ]]
+          dedicated_name="memberry-ret003b-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          dedicated_id="$(docker run -d --name "$dedicated_name" -p 127.0.0.1:17687:7687 \
+            -e NEO4J_AUTH=neo4j/testpassword "$neo4j_image_sha256")"
+          trap 'docker rm -f "$dedicated_name" >/dev/null 2>&1 || true' EXIT
+          [[ "$dedicated_id" =~ ^[0-9a-f]{64}$ ]]
+          for attempt in $(seq 1 30); do
+            if docker exec "$dedicated_name" cypher-shell -u neo4j -p testpassword 'RETURN 1' >/dev/null 2>&1; then break; fi
+            [[ "$attempt" -lt 30 ]] || exit 1
+            sleep 2
+          done
+          dedicated_image_sha256="$(docker inspect --format='{{.Image}}' "$dedicated_id")"
+          [[ "$dedicated_image_sha256" == "$neo4j_image_sha256" ]]
+          printf '{"neo4jContainerId":"%s","neo4jImageSha256":"%s","dedicatedNeo4jContainerId":"%s","dedicatedNeo4jImageSha256":"%s","mode":"required","disposable":true}\n' \
+            "$neo4j_container_id" "$neo4j_image_sha256" "$dedicated_id" "$dedicated_image_sha256" >"$evidence_dir/service.json"
+          npm run bench:lab:retrieval:candidate:live 2>&1 | sed -E \
+            -e 's/testpassword/[REDACTED]/g' \
+            | tee "$evidence_dir/run.log"
+          test -f "$evidence_dir/evidence.json"
+
+      - name: Upload candidate-channel runtime live evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: memberry-candidate-channel-live-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/memberry-candidate-channel-live
           if-no-files-found: error
           retention-days: 14
 

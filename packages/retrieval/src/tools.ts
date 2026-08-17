@@ -4,21 +4,35 @@
 import { z } from 'zod';
 import type { McpServer, RegisteredTool } from '@modelcontextprotocol/sdk/server/mcp.js';
 import type { ToolAnnotations } from '@modelcontextprotocol/sdk/types.js';
+import type { Driver } from 'neo4j-driver';
 import { DEFAULT_TENANT } from '@memberry/core';
 import type { UnifiedContext, RetrievalStrategy } from './types.js';
 import { types as nodeUtilTypes } from 'node:util';
 import type { RetrievalTraceV1 } from './trace.js';
 import type { QueryPlanV1 } from './query-plan.js';
-import type {
-  ScopedEntityResolutionResultV1,
-  ScopedEntityTrustedAuthorityV1,
+import {
+  ScopedEntityResolver,
+  type ScopedEntityResolutionResultV1,
+  type ScopedEntityTrustedAuthorityV1,
 } from './scoped-entity-resolver.js';
-import { buildRuntimeQueryPlannerReceiptV1, RuntimeQueryPlannerError } from './runtime-query-planner.js';
+import {
+  buildRuntimeQueryPlannerReceiptV1,
+  resolveRuntimeQueryPlannerAuthorityV1,
+  RuntimeQueryPlannerError,
+  type RuntimeQueryPlannerResolvedReceiptV1,
+} from './runtime-query-planner.js';
 import {
   assertRetrievalTraceConformant,
   canonicalTraceJson,
   replayRetrievalTrace,
 } from './trace.js';
+import {
+  RuntimeCandidateChannelService,
+  type RuntimeCandidateDriver,
+  type RuntimeCandidateExecuteOptions,
+} from './runtime-candidate-channel.js';
+import type { CandidateChannelExecutionResultV1 } from './candidate-channel.js';
+import { askRetrievalTokenBudget } from './assembler.js';
 
 // ─── Service interface (injected) ────────────────────────────────────────────
 
@@ -64,6 +78,24 @@ export interface IUnifiedAssembler {
     evidence: Array<{ id: string; content: string }>;
     level: string;
   }>;
+  askFromContext?(question: string, context: UnifiedContext, level?: 'minimal' | 'low' | 'medium' | 'high' | 'max'): Promise<{
+    answer: string;
+    cited_ids: string[];
+    evidence: Array<{ id: string; content: string }>;
+    level: string;
+  }>;
+  assembleCandidateExecution?(
+    task: string,
+    execution: CandidateChannelExecutionResultV1,
+    maxTokens: number,
+    includeArchitecture: boolean,
+    includeMemory: boolean,
+    traced?: boolean,
+  ): { context: UnifiedContext; trace?: RetrievalTraceV1 };
+}
+
+export interface IRuntimeCandidateChannelService {
+  execute(receipt: RuntimeQueryPlannerResolvedReceiptV1, options: RuntimeCandidateExecuteOptions): Promise<CandidateChannelExecutionResultV1>;
 }
 
 export interface IFeedbackTracker {
@@ -96,6 +128,9 @@ export interface RetrievalServiceContainer {
   /** Process-captured, exact default-off RET-002C2 feature switch. */
   queryPlannerEnabled: boolean;
   resolverFactory: RuntimeScopedEntityResolverFactory | null;
+  /** Process-captured exact-default-off RET-003B switch. */
+  candidateChannelEnabled: boolean;
+  candidateRuntime: IRuntimeCandidateChannelService | null;
 }
 
 export interface RuntimeScopedEntityResolver {
@@ -115,15 +150,34 @@ export function createRetrievalContainer(partial: Partial<RetrievalServiceContai
     authenticated: partial.authenticated ?? false,
     queryPlannerEnabled: partial.queryPlannerEnabled ?? false,
     resolverFactory: partial.resolverFactory ?? null,
+    candidateChannelEnabled: partial.candidateChannelEnabled ?? false,
+    candidateRuntime: partial.candidateRuntime ?? null,
   };
 }
 
 /** Process-default container, populated by setRetrievalServiceInstances() at bootstrap. */
 const defaultContainer: RetrievalServiceContainer = createRetrievalContainer();
+const tenantCandidateRuntimes = new Map<string, IRuntimeCandidateChannelService>();
+const tenantResolverFactories = new Map<string, RuntimeScopedEntityResolverFactory>();
 
 /** A retrieval container bound to a tenant, reusing the shared assembler. */
 export function retrievalContainerForTenant(tenantId: string, authenticated = false): RetrievalServiceContainer {
-  return { ...defaultContainer, tenantId, authenticated };
+  return {
+    ...defaultContainer,
+    tenantId,
+    authenticated,
+    candidateRuntime: tenantCandidateRuntimes.get(tenantId) ?? defaultContainer.candidateRuntime,
+    resolverFactory: tenantResolverFactories.get(tenantId) ?? defaultContainer.resolverFactory,
+  };
+}
+
+/** Bind a physically isolated tenant's candidate reads and resolver to one driver. */
+function setRetrievalTenantCandidateDriver(tenantId: string, driver: Driver & RuntimeCandidateDriver): void {
+  tenantCandidateRuntimes.set(tenantId, new RuntimeCandidateChannelService(driver));
+  tenantResolverFactories.set(tenantId, (authority) => {
+    const resolver = new ScopedEntityResolver(driver, authority);
+    return { resolve: (plan) => resolver.resolve(plan) };
+  });
 }
 
 export function setRetrievalServiceInstances(services: {
@@ -131,6 +185,10 @@ export function setRetrievalServiceInstances(services: {
   feedbackTracker: IFeedbackTracker;
   queryPlannerEnabled?: boolean;
   resolverFactory?: RuntimeScopedEntityResolverFactory;
+  candidateChannelEnabled?: boolean;
+  candidateRuntime?: IRuntimeCandidateChannelService;
+  candidateDriver?: RuntimeCandidateDriver;
+  tenantCandidateDrivers?: ReadonlyMap<string, Driver & RuntimeCandidateDriver>;
 }): void {
   // Full reset of the default container (a service omitted from `services` is
   // cleared), mirroring packages/mcp/src/tools.ts setServiceInstances().
@@ -138,6 +196,16 @@ export function setRetrievalServiceInstances(services: {
   defaultContainer.feedbackTracker = services.feedbackTracker ?? null;
   defaultContainer.queryPlannerEnabled = services.queryPlannerEnabled ?? false;
   defaultContainer.resolverFactory = services.resolverFactory ?? null;
+  defaultContainer.candidateChannelEnabled = services.candidateChannelEnabled ?? false;
+  defaultContainer.candidateRuntime = services.candidateRuntime
+    ?? (services.candidateDriver ? new RuntimeCandidateChannelService(services.candidateDriver) : null);
+  tenantCandidateRuntimes.clear();
+  tenantResolverFactories.clear();
+  if (services.tenantCandidateDrivers) {
+    for (const [tenantId, driver] of services.tenantCandidateDrivers) {
+      setRetrievalTenantCandidateDriver(tenantId, driver);
+    }
+  }
 }
 
 // ─── Tool names ──────────────────────────────────────────────────────────────
@@ -325,6 +393,7 @@ export function registerRetrievalTools(
   // but each call to registerRetrievalTools can now be bound to a different container.
   const {
     assembler, feedbackTracker, tenantId, authenticated, queryPlannerEnabled, resolverFactory,
+    candidateChannelEnabled, candidateRuntime,
   } = container;
   const tier1: RegisteredTool[] = [];
   const tier2: RegisteredTool[] = [];
@@ -351,6 +420,28 @@ export function registerRetrievalTools(
     { readOnlyHint: true, idempotentHint: true } satisfies ToolAnnotations,
     async (args) => {
       if (!assembler) throw new Error('Retrieval services not initialised');
+      if (candidateChannelEnabled) {
+        const receipt = await resolveRuntimeQueryPlannerAuthorityV1({
+          authenticated,
+          plannerEnabled: queryPlannerEnabled,
+          resolverFactory,
+          tenantId,
+          projectName: args.project_name,
+          entityScope: args.entity_scope,
+          ...(args.as_of !== undefined ? { asOf: args.as_of } : {}),
+        });
+        if (!candidateRuntime || !assembler.assembleCandidateExecution) throw new Error('candidate_runtime:unavailable');
+        const execution = await candidateRuntime.execute(receipt, {
+          includeArchitecture: args.include_arch, includeMemory: args.include_memory,
+        });
+        const assembled = assembler.assembleCandidateExecution(
+          args.task, execution, args.max_tokens, args.include_arch, args.include_memory, args.include_trace === true,
+        );
+        const md = assembler.renderMarkdown(assembled.context);
+        if (args.include_trace !== true) return textContent(md);
+        if (!assembled.trace) throw new Error('candidate_runtime:unavailable');
+        return tracedTextContent(md, serializeApprovedRetrievalTrace(assembled.trace));
+      }
       // Tenant safety: the deterministic strategy queries un-tenant-stamped
       // Entity/Aspect nodes, so it is not safe for a named tenant. Force the
       // ranked path (memory is tenant-filtered; arch entities strict-match to
@@ -407,6 +498,34 @@ export function registerRetrievalTools(
     { readOnlyHint: true, idempotentHint: true } satisfies ToolAnnotations,
     async (args) => {
       if (!assembler) throw new Error('Retrieval services not initialised');
+      if (candidateChannelEnabled) {
+        const receipt = await resolveRuntimeQueryPlannerAuthorityV1({
+          authenticated,
+          plannerEnabled: queryPlannerEnabled,
+          resolverFactory,
+          tenantId,
+          projectName: args.project_name,
+          entityScope: args.entity_scope,
+          ...(args.as_of !== undefined ? { asOf: args.as_of } : {}),
+        });
+        if (!candidateRuntime || !assembler.askFromContext || !assembler.assembleCandidateExecution) {
+          throw new Error('candidate_runtime:unavailable');
+        }
+        const execution = await candidateRuntime.execute(receipt, {
+          includeArchitecture: true, includeMemory: true,
+        });
+        const assembled = assembler.assembleCandidateExecution(
+          args.question, execution, askRetrievalTokenBudget(args.reasoning_level), true, true, false,
+        );
+        const r = await assembler.askFromContext(args.question, assembled.context, args.reasoning_level);
+        const lines = [
+          `# Answer`, ``, r.answer, ``,
+          `**Reasoning level:** ${r.level} · **Cited:** ${r.cited_ids.length ? r.cited_ids.join(', ') : 'none'}`,
+          ``, `## Evidence`,
+          ...r.evidence.map((e, i) => `<!-- ${e.id} -->\n[${i + 1}] ${e.content}`),
+        ];
+        return textContent(lines.join('\n'));
+      }
       const resolvedEntityIds = queryPlannerEnabled
         ? await resolveRuntimeEntityIds(
           authenticated, resolverFactory, tenantId, args.project_name, args.entity_scope, args.as_of,

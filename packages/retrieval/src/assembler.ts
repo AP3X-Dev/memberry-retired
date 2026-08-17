@@ -36,6 +36,7 @@ import {
   type RuntimeStructuralObservation,
 } from './runtime-trace.js';
 import type { RetrievalTraceV1 } from './trace.js';
+import type { CandidateChannelExecutionResultV1 } from './candidate-channel.js';
 import type {
   RetrievalTraceFailureCode,
   RetrievalTraceFailureStage,
@@ -124,6 +125,11 @@ const ASK_LEVELS: Record<AskLevel, { retrievalTokens: number; synthTokens: numbe
   high: { retrievalTokens: 10000, synthTokens: 1200, task: 'synthesis' },
   max: { retrievalTokens: 16000, synthTokens: 2000, task: 'synthesis' },
 };
+
+/** @internal Single source of truth for berry_ask retrieval depth. */
+export function askRetrievalTokenBudget(level: AskLevel = 'medium'): number {
+  return ASK_LEVELS[level].retrievalTokens;
+}
 
 const ASK_SYSTEM_PROMPT = `You are MemBerry's memory analyst. Answer the question USING ONLY the numbered evidence.
 - Combine facts when needed and state the inference explicitly.
@@ -259,10 +265,23 @@ export class UnifiedAssembler {
       tenantId: opts.tenantId,
       ...(resolvedEntityIds !== undefined ? { resolvedEntityIds } : {}),
     });
+    return this.askFromContext(question, ctx, level);
+  }
+
+  /** @internal RET-003B synthesis seam for an already authority-bound context. */
+  async askFromContext(
+    question: string,
+    ctx: UnifiedContext,
+    level: AskLevel = 'medium',
+  ): Promise<AskResult> {
     const evidence = ctx.sections.flatMap((s) => s.items);
     if (evidence.length === 0) {
       return { answer: 'No relevant memory found to answer this question.', cited_ids: [], evidence: [], level };
     }
+    if (!this.llm || !this.llm.available) {
+      throw new Error('berry_ask requires an LLM client — set OPENAI_API_KEY');
+    }
+    const cfg = ASK_LEVELS[level];
 
     // Fence each retrieved (untrusted) memory item so the model can tell data
     // from instructions. The system prompt instructs the model that anything
@@ -280,6 +299,100 @@ export class UnifiedAssembler {
     });
 
     return { ...parseAskResponse(raw, evidence), evidence, level };
+  }
+
+  /** @internal RET-003B: compose authority-bound channel candidates through
+   * the established ranked fusion, MMR, dedup, and token-budget pipeline. */
+  assembleCandidateExecution(
+    task: string,
+    execution: CandidateChannelExecutionResultV1,
+    maxTokens: number,
+    includeArchitecture: boolean,
+    includeMemory: boolean,
+    traced = false,
+  ): TracedUnifiedContext | { context: UnifiedContext } {
+    const listsByChannel = new Map<string, RetrievalResult[]>();
+    const observations: RuntimeStructuralObservation[] = [];
+    const evidenceByPrivateId = new Map<string, string>();
+    const incompleteReasons: RetrievalTraceIncompleteReason[] = [];
+    for (const settlement of execution.settlements) {
+      if (settlement.outcome === 'safe-failure' && settlement.code === 'budget-exceeded') {
+        if (!incompleteReasons.includes('limit-overflow')) incompleteReasons.push('limit-overflow');
+        continue;
+      }
+      observations.push({
+        channels: [settlement.outcome === 'success'
+          ? { channel: settlement.channel, outcome: 'success' }
+          : { channel: settlement.channel, outcome: 'safe-failure', code: settlement.code as RetrievalTraceFailureCode }],
+        candidates: [],
+        finalIds: [],
+      });
+    }
+    for (const candidate of execution.candidates) {
+      const privateId = `${candidate.channel}\u0000${candidate.rank}\u0000${candidate.evidenceId}`;
+      const result: RetrievalResult = {
+        id: privateId,
+        source_type: candidate.sourceType as RetrievalResult['source_type'],
+        title: candidate.title,
+        content: candidate.content,
+        score: candidate.score,
+        metadata: { title: candidate.title, confidence: candidate.score, evidenceId: candidate.evidenceId },
+      };
+      const list = listsByChannel.get(candidate.channel) ?? [];
+      list.push(result);
+      listsByChannel.set(candidate.channel, list);
+      evidenceByPrivateId.set(privateId, candidate.evidenceId);
+      const observation = observations.find((entry) => entry.channels[0]?.channel === candidate.channel);
+      if (observation) {
+        observation.candidates.push({
+          privateId,
+          sourceType: candidate.sourceType,
+          channels: [{ channel: candidate.channel, rank: candidate.rank, score: candidate.score }],
+          evidence: { confidence: candidate.score },
+          estimatedTokens: Math.ceil(candidate.content.length / 4),
+        });
+        observation.finalIds.push(privateId);
+      }
+    }
+    const lists = execution.request.plannedChannels
+      .map((channel) => listsByChannel.get(channel))
+      .filter((list): list is RetrievalResult[] => list !== undefined);
+    const traceAdapter = traced ? new RankedRuntimeTraceAdapter(observations, lists, {
+      includeCode: false,
+      includeArchitecture,
+      includeMemory,
+      projectScopeApplied: true,
+      projectNameApplied: true,
+      memoryScopeApplied: true,
+      namedTenant: execution.request.tenantId !== 'default',
+      entityCount: execution.request.resolvedEntityIds.length,
+      tagCount: 0,
+      temporalFilterApplied: execution.request.temporalFrame.mode === 'as-of',
+      query: task,
+      maxTokens,
+      plannedChannels: execution.request.plannedChannels,
+    }, incompleteReasons) : undefined;
+    const fused = rrfFusion(lists, 50, 60, undefined, undefined, undefined, traceAdapter);
+    const deduped = dedup(fused);
+    traceAdapter?.recordDedup(fused.map((result) => result.id), deduped.map((result) => result.id));
+    const privateSections = groupAndBudget(deduped, maxTokens);
+    traceAdapter?.recordBudget(privateSections.flatMap((section) => section.items.map((item) => item.id)));
+    const sections: ContextSection[] = privateSections.map((section) => ({
+      ...section,
+      items: section.items.map((item) => ({
+        ...item,
+        id: evidenceByPrivateId.get(item.id)!,
+        metadata: { ...item.metadata, evidenceId: evidenceByPrivateId.get(item.id)! },
+      })),
+    }));
+    const tokenCount = sections.reduce(
+      (sum, section) => sum + section.items.reduce((itemSum, item) => itemSum + Math.ceil(item.content.length / 4), 0),
+      0,
+    );
+    const context: UnifiedContext = {
+      task, strategy: 'ranked', sections, token_count: tokenCount, assembled_at: new Date().toISOString(),
+    };
+    return { context, ...(traceAdapter ? { trace: traceAdapter.finalize() } : {}) };
   }
 
   private async getCollectionSize(): Promise<number | undefined> {
@@ -1419,6 +1532,7 @@ function groupAndBudget(results: RetrievalResult[], maxTokens: number): ContextS
     semantic: 'Knowledge',
     episodic: 'History',
     aspect: 'Cross-Cutting Concerns',
+    fact: 'Facts',
   };
 
   for (const result of results) {

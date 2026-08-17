@@ -3,7 +3,7 @@
 
 // === Retrieval result (unified across all sources) ===
 
-export type SourceType = 'semantic' | 'episodic' | 'symbol' | 'arch_entity' | 'aspect';
+export type SourceType = 'semantic' | 'episodic' | 'symbol' | 'arch_entity' | 'aspect' | 'fact';
 
 export interface RetrievalResult {
   id: string;
@@ -66,7 +66,8 @@ export interface FeedbackSignal {
 
 export interface BoostFactors {
   entity_boosts: Record<string, number>;
-  source_type_boosts: Record<SourceType, number>;
+  source_type_boosts: Record<Exclude<SourceType, 'fact'>, number>
+    & Partial<Record<SourceType, number>>;
 }
 
 // === Query analysis ===

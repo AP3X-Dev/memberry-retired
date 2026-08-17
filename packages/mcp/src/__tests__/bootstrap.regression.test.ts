@@ -32,10 +32,41 @@ function parseComposePlannerValue(value: string | undefined): unknown {
   return scalar;
 }
 
+function parseComposeCandidateValue(value: string | undefined): unknown {
+  const template = COMPOSE_SOURCE.split(/\r?\n/)
+    .find((line) => line.includes('MEMBERRY_CANDIDATE_CHANNEL_V1:'))
+    ?.split('MEMBERRY_CANDIDATE_CHANNEL_V1: ')[1];
+  if (template === undefined) return undefined;
+  const interpolated = template.replace(
+    '${MEMBERRY_CANDIDATE_CHANNEL_V1:-}',
+    value === undefined || value.length === 0 ? '' : value,
+  );
+  if (interpolated.startsWith('"') && interpolated.endsWith('"')) return JSON.parse(interpolated) as unknown;
+  return interpolated.trim();
+}
+
 describe('bootstrap.ts regression', () => {
   it('RET-002C2 keeps runtime planning exact-value default-off and injects a driver-backed resolver', () => {
     expect(BOOTSTRAP_SOURCE).toContain("queryPlannerEnabled: process.env['MEMBERRY_QUERY_PLANNER_V1'] === '1'");
     expect(BOOTSTRAP_SOURCE).toContain('new ScopedEntityResolver(driver, authority)');
+  });
+  it('RET-003B keeps candidate channels exact-value default-off and binds default plus dedicated drivers', () => {
+    expect(BOOTSTRAP_SOURCE).toContain("candidateChannelEnabled: process.env['MEMBERRY_CANDIDATE_CHANNEL_V1'] === '1'");
+    expect(BOOTSTRAP_SOURCE).toContain('candidateDriver: driver');
+    expect(BOOTSTRAP_SOURCE).toContain('dedicatedTenantCandidateDrivers.set(tenant, tcore.driver)');
+    expect(BOOTSTRAP_SOURCE).toContain('tenantCandidateDrivers: dedicatedTenantCandidateDrivers');
+    const mcpService = COMPOSE_SOURCE.split('\n  mcp:')[1]?.split('\n  wiki:')[0];
+    const wikiService = COMPOSE_SOURCE.split('\n  wiki:')[1]?.split('\nvolumes:')[0];
+    const exactEntry = 'MEMBERRY_CANDIDATE_CHANNEL_V1: "${MEMBERRY_CANDIDATE_CHANNEL_V1:-}"';
+    expect(mcpService).toContain(exactEntry);
+    expect(COMPOSE_SOURCE.split(exactEntry)).toHaveLength(2);
+    expect(wikiService).not.toContain('MEMBERRY_CANDIDATE_CHANNEL_V1');
+  });
+  it.each([
+    ['unset', undefined, ''], ['empty', '', ''], ['one', '1', '1'], ['leading zero', '01', '01'],
+    ['decimal', '1.0', '1.0'], ['boolean-like', 'true', 'true'], ['trailing space', '1 ', '1 '],
+  ] as const)('RET-003B preserves %s candidate input as a string', (_label, value, expected) => {
+    expect(parseComposeCandidateValue(value)).toBe(expected);
   });
   it('RET-002C2 passes the default-off planner flag only into the production MCP service', () => {
     const mcpService = COMPOSE_SOURCE.split('\n  mcp:')[1]?.split('\n  wiki:')[0];

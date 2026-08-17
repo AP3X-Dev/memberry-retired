@@ -38,6 +38,7 @@
     "bench:lab:admission:candidate:live": "tsx bench/lab/admission-features/candidate/live.ts",
     "bench:lab:retrieval:scope:live": "vitest run packages/retrieval/src/__tests__/scoped-entity-resolver.live.test.ts",
     "bench:lab:retrieval:planner:live": "vitest run packages/mcp/src/__tests__/runtime-query-planner.live.test.ts",
+    "bench:lab:retrieval:candidate:live": "vitest run packages/mcp/src/__tests__/runtime-candidate-channel.live.test.ts",
     "bench:lab:retrieval-trace:live": "tsx bench/lab/retrieval-trace/live-conformance.ts",
     "validate:memberry-guidance": "node skills/memberry/scripts/validate-source-guidance.mjs && node skills/memberry/scripts/validate-project-config.mjs .cursorrules"
   },

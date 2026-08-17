@@ -26,6 +26,7 @@ export interface RuntimeStructuralCandidateObservation {
   evidence: { confidence?: number; sourceCount?: number; superseded?: boolean; invalidated?: boolean };
   estimatedTokens: number;
 }
+
 export interface RuntimeStructuralObservation {
   channels: RuntimeStructuralChannelObservation[];
   candidates: RuntimeStructuralCandidateObservation[];
@@ -51,6 +52,7 @@ export interface RankedTraceRequestFacts {
   temporalFilterApplied: boolean;
   query: string;
   maxTokens: number;
+  plannedChannels?: readonly RetrievalTraceChannel[];
 }
 
 export interface DeterministicTraceRequestFacts {
@@ -222,9 +224,11 @@ export class RankedRuntimeTraceAdapter implements RankedFusionObserver {
     facts: RankedTraceRequestFacts,
     incompleteReasons: readonly RetrievalTraceIncompleteReason[] = [],
   ) {
-    const plannedChannels = [...new Set(observations.flatMap((observation) =>
-      observation.channels.map((entry) => entry.channel as RetrievalTraceChannel)))]
-      .sort((a, b) => CHANNEL_ORDER.indexOf(a) - CHANNEL_ORDER.indexOf(b));
+    const plannedChannels = facts.plannedChannels === undefined
+      ? [...new Set(observations.flatMap((observation) =>
+          observation.channels.map((entry) => entry.channel as RetrievalTraceChannel)))]
+          .sort((a, b) => CHANNEL_ORDER.indexOf(a) - CHANNEL_ORDER.indexOf(b))
+      : [...facts.plannedChannels];
     this.collector = new RetrievalTraceCollector('ranked-v1', {
       sources: { code: facts.includeCode, architecture: facts.includeArchitecture, memory: facts.includeMemory },
       projectScopeApplied: facts.projectScopeApplied,
@@ -292,12 +296,16 @@ export class RankedRuntimeTraceAdapter implements RankedFusionObserver {
         const fromMemory = sourceChannels.some((channel) => channel.startsWith('memory.'));
         const fromCode = sourceChannels.some((channel) => channel.startsWith('code.'));
         const fromArchitecture = sourceChannels.some((channel) => channel.startsWith('arch.'));
+        const fromDirectArchitectureEntity = sourceChannels.some((channel) => channel === 'arch.entity');
         const projectApplied = (fromMemory && facts.memoryScopeApplied)
           || ((fromCode || fromArchitecture) && facts.projectNameApplied);
         this.collector.recordFilter(handle, { name: 'source-enabled', outcome: 'pass' });
         this.collector.recordFilter(handle, { name: 'tenant', outcome: 'pass' });
         this.collector.recordFilter(handle, { name: 'project', outcome: projectApplied ? 'pass' : 'not-applicable' });
-        this.collector.recordFilter(handle, { name: 'entity', outcome: fromMemory && facts.entityCount > 0 ? 'pass' : 'not-applicable' });
+        this.collector.recordFilter(handle, {
+          name: 'entity',
+          outcome: (fromMemory || fromDirectArchitectureEntity) && facts.entityCount > 0 ? 'pass' : 'not-applicable',
+        });
         this.collector.recordFilter(handle, { name: 'tag', outcome: fromMemory && facts.tagCount > 0 ? 'pass' : 'not-applicable' });
         this.collector.recordFilter(handle, { name: 'temporal', outcome: fromMemory && facts.temporalFilterApplied ? 'pass' : 'not-applicable' });
       });

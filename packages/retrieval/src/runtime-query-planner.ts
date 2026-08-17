@@ -65,6 +65,33 @@ export interface RuntimeQueryPlannerReceiptV1 {
   readonly trustedProjectScopes: readonly [string];
 }
 
+export interface RuntimeQueryPlannerAuthorityStateV1 {
+  readonly tenantId: string;
+  readonly projectScope: string;
+  readonly resolvedEntityId: string;
+  readonly temporalFrame: { readonly mode: 'current' } | { readonly mode: 'as-of'; readonly asOf: string };
+}
+
+export interface RuntimeQueryPlannerResolvedReceiptV1 {
+  readonly contract: 'memberry.runtime-query-planner-resolved-receipt.v1';
+}
+
+export interface RuntimeQueryPlannerResolverV1 {
+  resolve(plan: QueryPlanV1): Promise<unknown>;
+}
+
+export type RuntimeQueryPlannerResolverFactoryV1 = (authority: Readonly<{
+  tenantId: string;
+  projectScopes: readonly string[];
+}>) => RuntimeQueryPlannerResolverV1;
+
+const unresolvedReceiptState = new WeakMap<RuntimeQueryPlannerReceiptV1, Readonly<{
+  tenantId: string;
+  projectScope: string;
+  temporalFrame: RuntimeQueryPlannerAuthorityStateV1['temporalFrame'];
+}>>();
+const resolvedReceiptState = new WeakMap<RuntimeQueryPlannerResolvedReceiptV1, RuntimeQueryPlannerAuthorityStateV1>();
+
 export function buildRuntimeQueryPlannerReceiptV1(input: {
   tenantId: unknown;
   projectName: unknown;
@@ -118,11 +145,111 @@ export function buildRuntimeQueryPlannerReceiptV1(input: {
       hints: { source: 'task', repositories: [], entities, symbols: [] },
       resolution: { state: 'unresolved', canonicalEntityIds: [] },
     });
-    return Object.freeze({ plan, trustedProjectScopes });
+    const receipt = Object.freeze({ plan, trustedProjectScopes });
+    unresolvedReceiptState.set(receipt, Object.freeze({
+      tenantId,
+      projectScope: projectName,
+      temporalFrame: plan.temporalFrame as RuntimeQueryPlannerAuthorityStateV1['temporalFrame'],
+    }));
+    return receipt;
   } catch (error) {
     if (error instanceof RuntimeQueryPlannerError) throw error;
     return invalidRequest();
   }
+}
+
+function plannerOwnData(input: object, key: string): unknown {
+  const descriptor = Object.getOwnPropertyDescriptor(input, key);
+  if (!descriptor || !Object.prototype.hasOwnProperty.call(descriptor, 'value')
+    || descriptor.enumerable !== true) throw new RuntimeQueryPlannerError('resolution_failed');
+  return descriptor.value;
+}
+
+function exactResolvedEntityId(input: unknown): string {
+  try {
+    if (typeof input !== 'object' || input === null || nodeUtilTypes.isProxy(input)
+      || Array.isArray(input) || Object.getPrototypeOf(input) !== Object.prototype
+      || Reflect.ownKeys(input).length !== 2) throw new Error();
+    const resolution = plannerOwnData(input, 'resolution');
+    const diagnostics = plannerOwnData(input, 'diagnostics');
+    if (!Array.isArray(diagnostics) || nodeUtilTypes.isProxy(diagnostics)
+      || Object.getPrototypeOf(diagnostics) !== Array.prototype
+      || Reflect.ownKeys(diagnostics).length !== 1
+      || Object.getOwnPropertyDescriptor(diagnostics, 'length')?.value !== 0) throw new Error();
+    if (typeof resolution !== 'object' || resolution === null || nodeUtilTypes.isProxy(resolution)
+      || Array.isArray(resolution) || Object.getPrototypeOf(resolution) !== Object.prototype
+      || Reflect.ownKeys(resolution).length !== 2
+      || plannerOwnData(resolution, 'state') !== 'resolved') throw new Error();
+    const ids = plannerOwnData(resolution, 'canonicalEntityIds');
+    if (!Array.isArray(ids) || nodeUtilTypes.isProxy(ids) || Object.getPrototypeOf(ids) !== Array.prototype
+      || Reflect.ownKeys(ids).length !== 2 || Object.getOwnPropertyDescriptor(ids, 'length')?.value !== 1) throw new Error();
+    const id = Object.getOwnPropertyDescriptor(ids, '0');
+    if (!id || !Object.prototype.hasOwnProperty.call(id, 'value') || id.enumerable !== true
+      || typeof id.value !== 'string' || id.value.length < 1 || id.value.length > 200
+      || !/^[A-Za-z0-9][A-Za-z0-9._:-]*$/.test(id.value)) throw new Error();
+    return id.value;
+  } catch (error) {
+    if (error instanceof RuntimeQueryPlannerError) throw error;
+    throw new RuntimeQueryPlannerError('resolution_failed');
+  }
+}
+
+/** @internal Authenticates, plans, resolves, and seals one complete authority receipt. */
+export async function resolveRuntimeQueryPlannerAuthorityV1(input: {
+  authenticated: boolean;
+  plannerEnabled: boolean;
+  resolverFactory: RuntimeQueryPlannerResolverFactoryV1 | null;
+  tenantId: string;
+  projectName: unknown;
+  entityScope: unknown;
+  asOf?: unknown;
+}): Promise<RuntimeQueryPlannerResolvedReceiptV1> {
+  if (!input.authenticated) throw new RuntimeQueryPlannerError('authentication_required');
+  if (!input.plannerEnabled || !input.resolverFactory) throw new RuntimeQueryPlannerError('unavailable');
+  const unresolved = buildRuntimeQueryPlannerReceiptV1({
+    tenantId: input.tenantId,
+    projectName: input.projectName,
+    entityScope: input.entityScope,
+    ...(input.asOf !== undefined ? { asOf: input.asOf } : {}),
+  });
+  const trusted = unresolvedReceiptState.get(unresolved);
+  if (!trusted) throw new RuntimeQueryPlannerError('resolution_failed');
+  try {
+    const resolver = input.resolverFactory(Object.freeze({
+      tenantId: trusted.tenantId,
+      projectScopes: Object.freeze([trusted.projectScope]),
+    }));
+    if (typeof resolver !== 'object' || resolver === null || nodeUtilTypes.isProxy(resolver)) {
+      throw new RuntimeQueryPlannerError('resolution_failed');
+    }
+    const descriptor = Object.getOwnPropertyDescriptor(resolver, 'resolve');
+    if (!descriptor || !Object.prototype.hasOwnProperty.call(descriptor, 'value')
+      || typeof descriptor.value !== 'function') throw new RuntimeQueryPlannerError('resolution_failed');
+    const resolvedEntityId = exactResolvedEntityId(await descriptor.value.call(resolver, unresolved.plan));
+    const receipt = Object.freeze({
+      contract: 'memberry.runtime-query-planner-resolved-receipt.v1' as const,
+    });
+    resolvedReceiptState.set(receipt, Object.freeze({
+      tenantId: trusted.tenantId,
+      projectScope: trusted.projectScope,
+      resolvedEntityId,
+      temporalFrame: trusted.temporalFrame,
+    }));
+    return receipt;
+  } catch (error) {
+    if (error instanceof RuntimeQueryPlannerError) throw error;
+    throw new RuntimeQueryPlannerError('resolution_failed');
+  }
+}
+
+/** @internal Read the immutable authority behind an unforgeable resolved receipt. */
+export function readRuntimeQueryPlannerAuthorityV1(input: unknown): RuntimeQueryPlannerAuthorityStateV1 {
+  if (typeof input !== 'object' || input === null || nodeUtilTypes.isProxy(input)) {
+    throw new RuntimeQueryPlannerError('resolution_failed');
+  }
+  const state = resolvedReceiptState.get(input as RuntimeQueryPlannerResolvedReceiptV1);
+  if (!state) throw new RuntimeQueryPlannerError('resolution_failed');
+  return state;
 }
 
 export function buildRuntimeQueryPlanV1(input: {

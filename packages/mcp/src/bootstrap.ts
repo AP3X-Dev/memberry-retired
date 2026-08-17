@@ -522,18 +522,7 @@ export async function bootstrap(): Promise<BootstrapHandles> {
     llm,
   );
   const feedbackTrackerService = new FeedbackTracker(feedbackRedis);
-
-  setRetrievalServiceInstances({
-    assembler: unifiedAssembler,
-    feedbackTracker: feedbackTrackerService,
-    queryPlannerEnabled: process.env['MEMBERRY_QUERY_PLANNER_V1'] === '1',
-    resolverFactory: (authority) => {
-      const resolver = new ScopedEntityResolver(driver, authority);
-      return { resolve: (plan) => resolver.resolve(plan) };
-    },
-  });
-
-  console.error('[memberry-mcp] Retrieval services initialized');
+  const dedicatedTenantCandidateDrivers = new Map<string, typeof driver>();
 
   // ─── Wiki services ─────────────────────────────────────────────────────────
   // WikiCompiler.compile() accepts outputDir plus an optional project tag; the
@@ -650,11 +639,27 @@ export async function bootstrap(): Promise<BootstrapHandles> {
         memoryBlockService: tcore.memoryBlocks,
         factStore: tcore.factStore,
       });
+      dedicatedTenantCandidateDrivers.set(tenant, tcore.driver);
       dedicatedTenantCores.push(tcore);
       dedicatedTenantCoordinators.push(tenantCoordinator);
       console.error(`[memberry-mcp] tenant "${tenant}" bound to a dedicated datastore`);
     }
   }
+
+  setRetrievalServiceInstances({
+    assembler: unifiedAssembler,
+    feedbackTracker: feedbackTrackerService,
+    queryPlannerEnabled: process.env['MEMBERRY_QUERY_PLANNER_V1'] === '1',
+    candidateChannelEnabled: process.env['MEMBERRY_CANDIDATE_CHANNEL_V1'] === '1',
+    candidateDriver: driver,
+    tenantCandidateDrivers: dedicatedTenantCandidateDrivers,
+    resolverFactory: (authority) => {
+      const resolver = new ScopedEntityResolver(driver, authority);
+      return { resolve: (plan) => resolver.resolve(plan) };
+    },
+  });
+
+  console.error('[memberry-mcp] Retrieval services initialized');
 
   const extractionConsumer = buildExtractionConsumer(core);
   await extractionConsumer.start();

@@ -201,6 +201,24 @@ describe('FeedbackTracker', () => {
       expect(boosts.source_type_boosts.aspect).toBe(0);
     });
 
+    it('preserves the exact legacy five-key public boost object and Redis call shape', async () => {
+      const boosts = await tracker.getBoosts();
+
+      expect(boosts).toEqual({
+        entity_boosts: {},
+        source_type_boosts: {
+          semantic: 0,
+          episodic: 0,
+          symbol: 0,
+          arch_entity: 0,
+          aspect: 0,
+        },
+      });
+      expect(redis.zrevrangeWithScores).toHaveBeenCalledTimes(2);
+      expect(redis.zrevrangeWithScores).toHaveBeenNthCalledWith(1, 'amp:feedback:entity_boost', 0, 49);
+      expect(redis.zrevrangeWithScores).toHaveBeenNthCalledWith(2, 'amp:feedback:source_boost', 0, 10);
+    });
+
     it('ignores unknown source types from Redis', async () => {
       (redis.zrevrangeWithScores as ReturnType<typeof vi.fn>)
         .mockResolvedValueOnce([])

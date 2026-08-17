@@ -86,7 +86,7 @@ export class FeedbackTracker {
     const sourceScores = await this.redis.zrevrangeWithScores(sourceBoostKey(tenant), 0, 10);
     const maxSourceScore = sourceScores.length > 0 ? sourceScores[0].score : 1;
 
-    const source_type_boosts: Record<SourceType, number> = {
+    const source_type_boosts: BoostFactors['source_type_boosts'] = {
       semantic: 0,
       episodic: 0,
       symbol: 0,
@@ -95,7 +95,7 @@ export class FeedbackTracker {
     };
     for (const { member, score } of sourceScores) {
       if (score > 0 && member in source_type_boosts) {
-        source_type_boosts[member as SourceType] = Math.min(0.5, score / Math.max(maxSourceScore, 1) * 0.5);
+        source_type_boosts[member as Exclude<SourceType, 'fact'>] = Math.min(0.5, score / Math.max(maxSourceScore, 1) * 0.5);
       }
     }
 

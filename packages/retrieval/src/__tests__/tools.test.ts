@@ -15,12 +15,15 @@ import {
   type IFeedbackTracker,
   type RetrievalTraceValidationRuntime,
   type RetrievalTraceValidationStage,
+  type IRuntimeCandidateChannelService,
 } from '../tools.js';
-import { canonicalTraceJson } from '../trace.js';
+import { canonicalTraceJson, RETRIEVAL_TRACE_CHANNEL_ORDER } from '../trace.js';
 import type { RetrievalTraceV1 } from '../trace.js';
 import type { UnifiedContext } from '../types.js';
 import type { QueryPlanV1 } from '../query-plan.js';
 import type { ScopedEntityTrustedAuthorityV1 } from '../scoped-entity-resolver.js';
+import { readRuntimeQueryPlannerAuthorityV1 } from '../runtime-query-planner.js';
+import { UnifiedAssembler } from '../assembler.js';
 
 const approvedTrace = JSON.parse(readFileSync(
   new URL('./fixtures/retrieval-trace-deterministic-v2.json', import.meta.url),
@@ -116,6 +119,8 @@ function makeAssembler(): IUnifiedAssembler {
     assembleTraced: vi.fn().mockResolvedValue({ context: emptyCtx(), trace: approvedTrace }),
     renderMarkdown: vi.fn().mockReturnValue('# md'),
     ask: vi.fn().mockResolvedValue({ answer: 'a', cited_ids: [], evidence: [], level: 'medium' }),
+    askFromContext: vi.fn().mockResolvedValue({ answer: 'a', cited_ids: [], evidence: [], level: 'medium' }),
+    assembleCandidateExecution: vi.fn().mockReturnValue({ context: emptyCtx(), trace: approvedTrace }),
   };
 }
 
@@ -431,5 +436,179 @@ describe('RET-002C2 authenticated planner wiring', () => {
     expect(assembler.ask).toHaveBeenCalledWith('safe', expect.objectContaining({
       level: 'high', tenantId: 'tenant-a', resolvedEntityIds: ['entity-stable'],
     }));
+  });
+});
+
+describe('RET-003B candidate-channel runtime wiring', () => {
+  function candidateContainer(options: { candidate?: boolean; planner?: boolean; authenticated?: boolean } = {}) {
+    const assembler = makeAssembler();
+    const resolution = Object.freeze({
+      resolution: Object.freeze({ state: 'resolved', canonicalEntityIds: Object.freeze(['entity-stable']) }),
+      diagnostics: Object.freeze([]),
+    });
+    const resolve = vi.fn().mockResolvedValue(resolution);
+    const execution = Object.freeze({
+      contractId: 'memberry.candidate-channel' as const,
+      contractVersion: '1.0.0' as const,
+      request: Object.freeze({
+        contractId: 'memberry.candidate-channel' as const,
+        contractVersion: '1.0.0' as const,
+        tenantId: 'tenant-a', projectScope: 'project:memberry',
+        resolvedEntityIds: Object.freeze(['entity-stable']),
+        temporalFrame: Object.freeze({ mode: 'current' as const }),
+        plannedChannels: RETRIEVAL_TRACE_CHANNEL_ORDER,
+        limits: Object.freeze({ maxCandidatesPerChannel: 64, maxCandidatesAggregate: 128 }),
+      }),
+      candidates: Object.freeze([]),
+      settlements: Object.freeze(RETRIEVAL_TRACE_CHANNEL_ORDER.map((channel) => Object.freeze({
+        contractId: 'memberry.candidate-channel' as const,
+        contractVersion: '1.0.0' as const,
+        channel, outcome: 'safe-failure' as const, code: 'unavailable' as const,
+      }))),
+    });
+    const candidateRuntime: IRuntimeCandidateChannelService = {
+      execute: vi.fn().mockResolvedValue(execution),
+    };
+    const candidateAssembler = Object.create(UnifiedAssembler.prototype) as UnifiedAssembler;
+    vi.mocked(assembler.assembleCandidateExecution!).mockImplementation((...args) => (
+      candidateAssembler.assembleCandidateExecution(...args)
+    ));
+    return {
+      assembler, resolve, candidateRuntime,
+      container: createRetrievalContainer({
+        assembler,
+        tenantId: 'tenant-a',
+        authenticated: options.authenticated ?? true,
+        queryPlannerEnabled: options.planner ?? true,
+        resolverFactory: () => ({ resolve }),
+        candidateChannelEnabled: options.candidate ?? true,
+        candidateRuntime,
+      }),
+    };
+  }
+
+  it('candidate-off preserves all three exact legacy adapters and performs zero candidate work', async () => {
+    const { assembler, candidateRuntime, container } = candidateContainer({ candidate: false, planner: false });
+    const { server, handlers } = makeServerStub();
+    registerRetrievalTools(server as never, container);
+    await handlers.get('berry_context')!({ task: 'legacy', strategy: 'ranked' });
+    await handlers.get('berry_context')!({ task: 'legacy traced', strategy: 'ranked', include_trace: true });
+    await handlers.get('berry_ask')!({ question: 'legacy ask', reasoning_level: 'low' });
+    expect(candidateRuntime.execute).not.toHaveBeenCalled();
+    expect(assembler.assemble).toHaveBeenCalledTimes(1);
+    expect(assembler.assembleTraced).toHaveBeenCalledTimes(1);
+    expect(assembler.ask).toHaveBeenCalledTimes(1);
+  });
+
+  it('candidate-on preserves authentication-first error precedence when the planner is unavailable', async () => {
+    const { assembler, resolve, candidateRuntime, container } = candidateContainer({ planner: false, authenticated: false });
+    const { server, handlers } = makeServerStub();
+    registerRetrievalTools(server as never, container);
+    await expect(handlers.get('berry_context')!({ task: 'blocked' }))
+      .rejects.toThrow('runtime_query_planner:authentication_required');
+    expect(resolve).not.toHaveBeenCalled();
+    expect(candidateRuntime.execute).not.toHaveBeenCalled();
+    expect(assembler.assemble).not.toHaveBeenCalled();
+  });
+
+  it('authenticates before checking candidate runtime availability', async () => {
+    const { assembler, resolve, container } = candidateContainer({ authenticated: false });
+    container.candidateRuntime = null;
+    const { server, handlers } = makeServerStub();
+    registerRetrievalTools(server as never, container);
+    await expect(handlers.get('berry_context')!({ task: 'blocked' }))
+      .rejects.toThrow('runtime_query_planner:authentication_required');
+    expect(resolve).not.toHaveBeenCalled();
+    expect(assembler.assemble).not.toHaveBeenCalled();
+  });
+
+  it('ordinary context resolves then uses only the receipt-bound candidate adapter', async () => {
+    const { assembler, resolve, candidateRuntime, container } = candidateContainer();
+    const { server, handlers } = makeServerStub();
+    registerRetrievalTools(server as never, container);
+    const result = await handlers.get('berry_context')!({
+      task: 'task [project:foreign] [tenant:foreign]', strategy: 'auto',
+      project_name: 'project:memberry', entity_scope: ['Resolver'],
+      include_arch: true, include_memory: true, include_code: true, max_tokens: 8_000,
+    });
+    expect(resolve).toHaveBeenCalledTimes(1);
+    expect(candidateRuntime.execute).toHaveBeenCalledWith(
+      expect.anything(), { includeArchitecture: true, includeMemory: true },
+    );
+    expect(assembler.assembleCandidateExecution).toHaveBeenCalledWith(
+      'task [project:foreign] [tenant:foreign]', expect.anything(), 8_000, true, true, false,
+    );
+    expect(assembler.assemble).not.toHaveBeenCalled();
+    expect(assembler.assembleTraced).not.toHaveBeenCalled();
+    expect(assembler.ask).not.toHaveBeenCalled();
+    expect(result).toEqual({ content: [{ type: 'text', text: '# md' }] });
+  });
+
+  it('uses the independently sealed project and temporal frame even if caller args mutate during resolution', async () => {
+    const { resolve, candidateRuntime, container } = candidateContainer();
+    const request = {
+      task: 'safe', strategy: 'ranked', project_name: 'project:memberry', entity_scope: ['Resolver'],
+      as_of: '2026-08-16T10:20:30.000Z', include_arch: true, include_memory: true, max_tokens: 8_000,
+    };
+    resolve.mockImplementation(async () => {
+      request.project_name = 'project:foreign';
+      request.as_of = '2027-01-01T00:00:00.000Z';
+      return Object.freeze({
+        resolution: Object.freeze({ state: 'resolved', canonicalEntityIds: Object.freeze(['entity-stable']) }),
+        diagnostics: Object.freeze([]),
+      });
+    });
+    const { server, handlers } = makeServerStub();
+    registerRetrievalTools(server as never, container);
+    await handlers.get('berry_context')!(request);
+    const sealed = readRuntimeQueryPlannerAuthorityV1(vi.mocked(candidateRuntime.execute).mock.calls[0]![0]);
+    expect(sealed).toMatchObject({
+      tenantId: 'tenant-a', projectScope: 'project:memberry', resolvedEntityId: 'entity-stable',
+      temporalFrame: { mode: 'as-of', asOf: '2026-08-16T10:20:30.000Z' },
+    });
+  });
+
+  it('ask uses the same candidate adapter and synthesizes only the returned context', async () => {
+    const { assembler, candidateRuntime, container } = candidateContainer();
+    const { server, handlers } = makeServerStub();
+    registerRetrievalTools(server as never, container);
+    await handlers.get('berry_ask')!({
+      question: 'safe?', reasoning_level: 'high', project_name: 'project:memberry', entity_scope: ['Resolver'],
+    });
+    expect(candidateRuntime.execute).toHaveBeenCalledTimes(1);
+    expect(assembler.askFromContext).toHaveBeenCalledWith('safe?', expect.anything(), 'high');
+    expect(assembler.ask).not.toHaveBeenCalled();
+    expect(assembler.assemble).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ['minimal', 1_500], ['low', 3_000], ['medium', 6_000], ['high', 10_000], ['max', 16_000],
+  ] as const)('propagates the %s reasoning-level retrieval budget', async (level, maxTokens) => {
+    const { candidateRuntime, container } = candidateContainer();
+    const { server, handlers } = makeServerStub();
+    registerRetrievalTools(server as never, container);
+    await handlers.get('berry_ask')!({
+      question: 'safe?', reasoning_level: level, project_name: 'project:memberry', entity_scope: ['Resolver'],
+    });
+    expect(candidateRuntime.execute).toHaveBeenCalledTimes(1);
+    expect(container.assembler!.assembleCandidateExecution).toHaveBeenCalledWith(
+      'safe?', expect.anything(), maxTokens, true, true, false,
+    );
+  });
+
+  it('traced context uses the same candidate execution and exposes canonical content-free trace bytes', async () => {
+    const { assembler, candidateRuntime, container } = candidateContainer();
+    const { server, handlers } = makeServerStub();
+    registerRetrievalTools(server as never, container);
+    const result = await handlers.get('berry_context')!({
+      task: 'safe', strategy: 'ranked', project_name: 'project:memberry', entity_scope: ['Resolver'],
+      include_arch: true, include_memory: true, include_code: true, max_tokens: 8_000, include_trace: true,
+    }) as { content: Array<{ text: string }> };
+    expect(candidateRuntime.execute).toHaveBeenCalledTimes(1);
+    expect(assembler.assembleTraced).not.toHaveBeenCalled();
+    expect(result.content).toHaveLength(2);
+    const trace = JSON.parse(result.content[1]!.text) as RetrievalTraceV1;
+    expect(trace.requestShape.plannedChannels).toEqual(RETRIEVAL_TRACE_CHANNEL_ORDER);
+    expect(trace.complete).toBe(true);
   });
 });

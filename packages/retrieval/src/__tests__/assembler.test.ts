@@ -687,6 +687,20 @@ describe('UnifiedAssembler', () => {
       return { asm, chatSpy: llm.chat };
     }
 
+    it('RET-003B returns the fixed empty answer without an LLM or any retrieval work', async () => {
+      const asm = new UnifiedAssembler(driver as never, redis, codeLayer, memoryLayer, embedding, null);
+      const result = await asm.askFromContext('question', {
+        task: 'question', strategy: 'ranked', sections: [], token_count: 0,
+        assembled_at: '2026-08-16T00:00:00.000Z',
+      }, 'high');
+      expect(result).toEqual({
+        answer: 'No relevant memory found to answer this question.', cited_ids: [], evidence: [], level: 'high',
+      });
+      expect(memoryLayer.load).not.toHaveBeenCalled();
+      expect(codeLayer.search).not.toHaveBeenCalled();
+      expect(embedding.embed).not.toHaveBeenCalled();
+    });
+
     it('adds the untrusted-data guard clause to the synthesis system prompt', async () => {
       const chat = vi.fn().mockResolvedValue(JSON.stringify({ answer: 'ok', cited: [1] }));
       const { asm } = askAssembler(chat);
