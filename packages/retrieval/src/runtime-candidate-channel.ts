@@ -1,4 +1,4 @@
-import { Record as Neo4jRecord, type Driver } from 'neo4j-driver';
+import neo4j, { Record as Neo4jRecord, type Driver } from 'neo4j-driver';
 import { types as nodeUtilTypes } from 'node:util';
 import { FactStore } from '@memberry/neo4j';
 import type { FactNode } from '@memberry/core';
@@ -364,7 +364,7 @@ export class RuntimeCandidateChannelService {
                 projectScope: state.projectScope,
                 entityId: state.resolvedEntityId,
                 asOf: state.asOf ?? null,
-                rowLimit: MAX_ROWS + 1,
+                rowLimit: neo4j.int(MAX_ROWS + 1),
               }), QUERY_TIMEOUT_MS);
               candidates = parseRows(raw, state, spec!);
               await bounded(tx.commit(), CLOSE_TIMEOUT_MS);

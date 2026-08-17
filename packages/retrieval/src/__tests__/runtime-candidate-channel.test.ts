@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
-import { Record as Neo4jRecord } from 'neo4j-driver';
+import neo4j, { Record as Neo4jRecord } from 'neo4j-driver';
 
 import { canonicalTraceJson, RETRIEVAL_TRACE_CHANNEL_ORDER } from '../trace.js';
 import { resolveRuntimeQueryPlannerAuthorityV1 } from '../runtime-query-planner.js';
@@ -96,7 +96,11 @@ describe('RET-003B runtime candidate channel service', () => {
     expect(mock.calls).toHaveLength(3);
     for (const [query, params] of mock.calls) {
       if (query.includes('UNWIND $ids AS eid')) expect(params).toMatchObject({ tenantId: 'tenant-a', ids: [entityId] });
-      else expect(params).toMatchObject({ tenantId: 'tenant-a', projectScope: project, entityId });
+      else {
+        expect(params).toMatchObject({ tenantId: 'tenant-a', projectScope: project, entityId });
+        expect(neo4j.isInt(params.rowLimit)).toBe(true);
+        expect(neo4j.integer.toNumber(params.rowLimit as neo4j.Integer)).toBe(65);
+      }
     }
   });
 
