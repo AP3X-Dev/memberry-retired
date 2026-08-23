@@ -4,6 +4,7 @@ permissions:
   contents: read
 
 on:
+  workflow_dispatch:
   push:
     branches: [main, master, feat/memberry-phase2-integration]
   pull_request:
@@ -47,6 +48,7 @@ jobs:
       - name: Show pre-flight receipts
         if: ${{ always() }}
         run: |
+          echo "event=$GITHUB_EVENT_NAME GITHUB_REF=$GITHUB_REF"; echo "payload.ref=$(jq -r .ref "$GITHUB_EVENT_PATH")"; echo "payload.keys=$(jq -r 'keys|join(",")' "$GITHUB_EVENT_PATH")"
           find "$RUNNER_TEMP/memberry-ret010-holdout" -type f -exec sh -c 'echo "== $1"; cat "$1"; echo' _ {} \; || echo "no receipts"
           echo "untracked-or-dirty:"; git status --porcelain=v1 --untracked-files=all | head -20
           echo "NODE_OPTIONS=${NODE_OPTIONS-<unset>} NODE_PATH=${NODE_PATH-<unset>}"
