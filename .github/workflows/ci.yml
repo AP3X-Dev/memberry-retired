@@ -37,6 +37,21 @@ jobs:
       - name: Build all packages
         run: npm run build
 
+      - name: RET-010 holdout pre-flight diagnostic (temporary, not for merge)
+        continue-on-error: true
+        env:
+          RET010_HOLDOUT_QUALIFICATION_SHA: ${{ github.sha }}
+          RET010_HOLDOUT_APPROVAL_DIGEST: '0000000000000000000000000000000000000000000000000000000000000000'
+        run: node --import tsx bench/lab/ret010/holdout-gate.mts run
+
+      - name: Show pre-flight receipts
+        if: ${{ always() }}
+        run: |
+          find "$RUNNER_TEMP/memberry-ret010-holdout" -type f -exec sh -c 'echo "== $1"; cat "$1"; echo' _ {} \; || echo "no receipts"
+          echo "untracked-or-dirty:"; git status --porcelain=v1 --untracked-files=all | head -20
+          echo "NODE_OPTIONS=${NODE_OPTIONS-<unset>} NODE_PATH=${NODE_PATH-<unset>}"
+          env | grep -i '^github_\|^ret010_' | grep -v '^GITHUB_\|^RET010_' || echo "no mixed-case env names"
+
       - name: Validate MemBerry agent guidance
         run: npm run validate:memberry-guidance
 
