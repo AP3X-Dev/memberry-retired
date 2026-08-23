@@ -1018,11 +1018,11 @@ async function runGate(hooks: {
       efficiency: result.efficiency, safety: result.safety,
     };
     await writeExclusive(root, 'holdout-receipt.json', receipt);
-  } catch (error) {
-    if (error === REJECTION && (await readdir(root)).length === 0) {
+  } catch {
+    if ((await readdir(root)).length === 0) {
       await writeExclusive(root, 'holdout-receipt.json', failureReceipt(id, stage));
     }
-    throw error;
+    throw REJECTION;
   }
 }
 

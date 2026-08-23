@@ -1684,7 +1684,7 @@ describe('RET-010 holdout fixture boundary', () => {
     expect(receipt).toMatchObject({ schemaVersion: '1', decision: 'failed', failureClass, stage });
   });
 
-  it('freezes the holdout failure taxonomy and never classifies a generic caller exception', async () => {
+  it('freezes the content-free holdout failure taxonomy for every protected failure', async () => {
     const harness = await instrumentedHoldoutHarness();
     const stages = ['source-integrity', 'approval', 'load-holdout', 'recall-comparison',
       'precision-comparison', 'efficiency', 'quality-policy', 'safety-policy', 'artifact'];
@@ -1702,7 +1702,8 @@ describe('RET-010 holdout fixture boundary', () => {
       ['metric', 'quality-policy'], ['safety', 'safety-policy'], ['custody', 'artifact'],
     ]);
     const source = await readFile(GATE, 'utf8');
-    expect(source).toContain('if (error === REJECTION && (await readdir(root)).length === 0)');
+    expect(source).not.toContain('error === REJECTION');
+    expect(source).toContain('if ((await readdir(root)).length === 0)');
     expect(source).not.toContain("'infrastructure'");
     expect(source).not.toMatch(/error\.(?:message|name|stack).*failureReceipt/);
     const run = source.slice(source.indexOf('async function runGate('),
@@ -1722,7 +1723,7 @@ describe('RET-010 holdout fixture boundary', () => {
     expect(run.match(/pairedEfficiencyInterval\(paired\)/g)).toHaveLength(1);
   });
 
-  it('propagates a caller exception without creating or classifying a failure receipt', async () => {
+  it('converts a caller exception into a content-free stage receipt', async () => {
     const harness = await instrumentedHoldoutHarness();
     const input = await holdoutRunFixture(414);
     const result = spawnBounded(['--import', 'tsx', harness, 'run-caller-exception'], {
@@ -1737,7 +1738,13 @@ describe('RET-010 holdout fixture boundary', () => {
       rejected: true, fixtureCloseAttempts: 1,
       failureShape: ['Error'],
     });
-    await expect(lstat(input.receipt)).rejects.toThrow();
+    const receipt = JSON.parse(await readFile(input.receipt, 'utf8')) as Record<string, unknown>;
+    expect(receipt).toEqual({
+      schemaVersion: '1', decision: 'failed', failureClass: 'harness', stage: 'load-holdout',
+      gitCommit: 'a'.repeat(40), nodeMajor: process.versions.node.split('.')[0],
+      nodeVersion: process.version, workflowRunId: input.environment.RET010_HOLDOUT_TEST_RUN_ID,
+      workflowRunAttempt: '1',
+    });
   });
 
   it.each([
