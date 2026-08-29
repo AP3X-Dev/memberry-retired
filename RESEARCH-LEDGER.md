@@ -443,7 +443,26 @@ Consolidation and dream call tenant-aware methods without a tenant, and the obvi
 `tenantId` required across the ~110 optional signatures, or bind it at store construction. **All
 three were rejected, and the reason is the finding.**
 
-**Binding or requiring a tenant makes it AVAILABLE. It does not make any Cypher USE it.**
+**SCOPED DOWN 2026-08-29 — the original wording overstated this. There is no data leak.**
+Measured on the live graph: Entity nodes hold exactly `type`, `id`, `created_at`, `name`,
+`aliases` — **no content** — and 15,647 of 15,647 carry no `tenant_id`, because the schema never
+defines one and nothing writes one. Entities are a deliberately SHARED namespace; `tenant.ts`'s
+own header calls this "logical (shared-graph) multi-tenancy". Every node that holds actual
+content — Fact, Semantic, Episodic, MemoryBlock — IS tenant-filtered.
+
+So the "tenant-blind queries" below are blind because their subject has no tenant to be blind
+about. A second tenant resolving a name reaches the same Entity node and then gets none of the
+first tenant's facts. **The residual exposure is name ENUMERATION, not data**: a tenant could learn
+that an entity name exists. Real, bounded, and only once a second tenant exists — there is none
+today.
+
+Closing even that is a DATA MODEL change, not a query fix: stamp `tenant_id` on Entity, filter the
+resolver, migrate 15,647 nodes. It also disappears entirely under database- or instance-per-tenant
+isolation, which is the strongest argument for settling the isolation model before touching any of
+this.
+
+The original point still stands as written, just at a lower severity:
+**binding or requiring a tenant makes it AVAILABLE. It does not make any Cypher USE it.**
 `packages/neo4j/src/entity-resolver.ts` contains **8 `.run()` calls and zero occurrences of the
 string "tenant"** — e.g. `MATCH (e:Entity {name: $text})`. `FactStore.create` calls
 `this.resolver.resolve(...)` inside its write transaction, so a perfectly tenant-bound `FactStore`
