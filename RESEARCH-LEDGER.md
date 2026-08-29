@@ -488,7 +488,7 @@ deciding isolation first and plumbing second.
 ---
 
 ### RL-018 — `berry_context` rejects a real call that names no entities
-**Evidence:** measured (2026-08-28) · **Status:** open · **Opened:** 2026-08-28
+**Evidence:** measured (2026-08-28) · **Status:** FIXED (2026-08-29) · **Opened:** 2026-08-28
 
 `eval001-d-08` is a real mined `berry_context` call — `task`, `project_name`, `include_code`,
 `include_memory`, `strategy`, `max_tokens`, and no `entity_scope`. The runtime query planner
@@ -527,6 +527,43 @@ So `berry_context` can only answer questions that NAME an entity. Everything els
 on both paths. Note the second edge of this: when entities ARE supplied, the resolved-id lane
 disables the episodic vector channel (`core/service.ts:1284-1291`), so the tool is constrained
 either way.
+
+**FIXED 2026-08-29 — routed, not accepted (PR #130).** The constraint is real and was left intact:
+the candidate channel is still anchored on exactly one resolved entity, and `snapshotEntityHints`
+still rejects an empty scope. What changed is which path answers. One predicate, `plannerAnchored`,
+gates the four sites where `berry_context` and `berry_ask` enter the planner; a request supplying
+neither an entity anchor nor a project takes the task-text path instead.
+
+That path is not a degraded mode. It is the same path both tools take with the planner flag off, it
+still honours `entity_scope` and `project_name` as ordinary filters, and it KEEPS the episodic
+vector channel the resolved-id lane disables — so it repairs the second edge noted above rather
+than inheriting it.
+
+**Absent, never invalid.** Only shapes the planner could never have accepted are routed. A supplied
+but malformed `entity_scope` or `project_name` still reaches the planner and still fails
+`invalid_request`; an entity that simply does not resolve still fails `resolution_failed`. Naming
+something that is not there is a real answer, and must never widen into a broad sweep.
+
+**Wider than the entry said.** The measured shape counts are 13 real mined `berry_context` calls,
+of which 5 are unanchored: 4 carry a project but no entities, 1 carries neither. `berry_ask` shares
+the constraint verbatim and was fixed in the same change; the original entry named only
+`berry_context`.
+
+**One hole found during the fix, by the gate.** The first cut routed unanchored requests past the
+planner — and the planner is where `authenticated` is checked, so omitting `entity_scope` bought an
+answer without authenticating. Caught by the two authentication-first precedence pins in
+`tools.test.ts`, both of which send an unanchored `{ task: 'blocked' }`. Anchoring decides WHICH
+path answers, never WHETHER the caller may ask; the gate now runs before the routing branch
+whenever either switch is on. Pinned in `tools.unanchored-routing.test.ts`, which the first 12
+tests had missed because every one of them authenticated.
+
+**Verified:** 15 tests across both tools and all four unanchored shapes. Checked that they bite —
+with the four `&& plannerAnchored(args)` guards removed, 8 of 12 failed with exactly
+`RuntimeQueryPlannerError: runtime_query_planner:invalid_request`, the original defect, while the
+loud-failure guards kept passing.
+
+**Unblocks the EVAL-001 re-pin.** `eval001-d-08` and the pending `eval001-d-04` were both this
+shape, so half of `berry_context`'s coverage was scoring `nonRetrieval` rather than a number.
 
 **For the record, the hint relaxation is safe, just insufficient.** Entity hints are explicitly
 non-authoritative (`query-plan.ts:65-71`), the contract already accepts `minItems: 0`, and the
