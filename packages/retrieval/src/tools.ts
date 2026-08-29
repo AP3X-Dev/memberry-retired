@@ -315,6 +315,37 @@ function oneResolvedEntityId(input: unknown): readonly [string] {
   }
 }
 
+/**
+ * RL-018 — is this request anchorable by the runtime query planner at all?
+ *
+ * The planner resolves to EXACTLY ONE entity (`runtime-candidate-channel.ts:328` pins
+ * `resolvedEntityIds: [state.resolvedEntityId]`, and every channel query is parameterised on it),
+ * and `buildRuntimeQueryPlannerReceiptV1` additionally requires a canonical `project:<slug>`.
+ * A caller supplying neither is asking an ordinary open question, not sending a malformed
+ * request: 5 of the 13 real mined `berry_context` calls carry no `entity_scope` (4 of those
+ * still carry a project, 1 carries neither). Before this, every one of them was unanswerable —
+ * `runtime_query_planner:invalid_request` on both tools.
+ *
+ * Unanchored requests take the task-text path instead. That is not a degraded mode: it is the
+ * same path both tools take with the planner flag off, it still honours `entity_scope` and
+ * `project_name` as ordinary filters, and it KEEPS the episodic vector channel that the
+ * resolved-id lane disables (`core/service.ts:1284-1291`).
+ *
+ * ABSENT, NEVER INVALID. A supplied-but-malformed `entity_scope` or `project_name` still reaches
+ * the planner and still fails loudly — this routes only the shapes the planner could never have
+ * accepted. An explicitly empty array counts as absent; anything else present is the planner's
+ * to judge.
+ *
+ * Tenant note: the task-text path opens no exposure the candidate path closed. It gates the code
+ * plane on `isDefaultTenant` itself (`assembler.ts:1036`, `:1105`), so a named tenant gets the
+ * same `code_plane: tenant-scope` either way.
+ */
+function plannerAnchored(args: { entity_scope?: unknown; project_name?: unknown }): boolean {
+  const scope = args.entity_scope;
+  const suppliedScope = scope !== undefined && !(Array.isArray(scope) && scope.length === 0);
+  return suppliedScope && args.project_name !== undefined;
+}
+
 async function resolveRuntimeEntityIds(
   authenticated: boolean,
   resolverFactory: RuntimeScopedEntityResolverFactory | null,
@@ -499,7 +530,9 @@ export function registerRetrievalTools(
     { readOnlyHint: true, idempotentHint: true } satisfies ToolAnnotations,
     async (args) => {
       if (!assembler) throw new Error('Retrieval services not initialised');
-      if (candidateChannelEnabled) {
+      // RL-018: an unanchored request cannot enter the candidate channel — it is pinned to one
+      // resolved entity by construction. Fall through to the task-text path rather than reject.
+      if (candidateChannelEnabled && plannerAnchored(args)) {
         const receipt = await resolveRuntimeQueryPlannerAuthorityV1({
           authenticated,
           plannerEnabled: queryPlannerEnabled,
@@ -584,7 +617,9 @@ export function registerRetrievalTools(
         tenantId,
         ...(forcedRanked ? { servedRerankerDisabled: true as const } : {}),
       };
-      const resolvedEntityIds = queryPlannerEnabled
+      // RL-018: `undefined` here is the already-supported task-text shape — the same value this
+      // takes with the planner flag off. Only anchored requests pay for resolution.
+      const resolvedEntityIds = queryPlannerEnabled && plannerAnchored(args)
         ? await resolveRuntimeEntityIds(
           authenticated, resolverFactory, tenantId, args.project_name, args.entity_scope, args.as_of,
         )
@@ -628,7 +663,8 @@ export function registerRetrievalTools(
     { readOnlyHint: true, idempotentHint: true } satisfies ToolAnnotations,
     async (args) => {
       if (!assembler) throw new Error('Retrieval services not initialised');
-      if (candidateChannelEnabled) {
+      // RL-018: same routing as berry_context — berry_ask shares the constraint verbatim.
+      if (candidateChannelEnabled && plannerAnchored(args)) {
         const receipt = await resolveRuntimeQueryPlannerAuthorityV1({
           authenticated,
           plannerEnabled: queryPlannerEnabled,
@@ -677,7 +713,7 @@ export function registerRetrievalTools(
         ];
         return textContent(lines.join('\n'));
       }
-      const resolvedEntityIds = queryPlannerEnabled
+      const resolvedEntityIds = queryPlannerEnabled && plannerAnchored(args)
         ? await resolveRuntimeEntityIds(
           authenticated, resolverFactory, tenantId, args.project_name, args.entity_scope, args.as_of,
         )
