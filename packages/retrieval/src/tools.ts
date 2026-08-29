@@ -346,6 +346,30 @@ function plannerAnchored(args: { entity_scope?: unknown; project_name?: unknown 
   return suppliedScope && args.project_name !== undefined;
 }
 
+/**
+ * RL-018 — anchoring decides WHICH path answers a request, never WHETHER the caller may ask.
+ *
+ * The planner owns the authentication gate (`resolveRuntimeQueryPlannerAuthorityV1` and
+ * `resolveRuntimeEntityIds` both check `authenticated` first). An unanchored request skips the
+ * planner, so without this it would skip that gate too — omitting `entity_scope` would have been
+ * an authentication bypass. Pinned by tools.test.ts "candidate-on preserves authentication-first
+ * error precedence when the planner is unavailable" and "authenticates before checking candidate
+ * runtime availability", both of which send an unanchored `{ task: 'blocked' }`.
+ *
+ * Precedence is unchanged for anchored requests: this raises the identical error the planner would
+ * have raised, only a few lines earlier. With BOTH switches off there is no planner to
+ * authenticate against, and the historical unauthenticated legacy path stays exactly as it was.
+ */
+function assertPlannerAuthentication(
+  candidateChannelEnabled: boolean,
+  queryPlannerEnabled: boolean,
+  authenticated: boolean,
+): void {
+  if ((candidateChannelEnabled || queryPlannerEnabled) && !authenticated) {
+    throw fixedPlannerFailure('authentication_required');
+  }
+}
+
 async function resolveRuntimeEntityIds(
   authenticated: boolean,
   resolverFactory: RuntimeScopedEntityResolverFactory | null,
@@ -530,6 +554,7 @@ export function registerRetrievalTools(
     { readOnlyHint: true, idempotentHint: true } satisfies ToolAnnotations,
     async (args) => {
       if (!assembler) throw new Error('Retrieval services not initialised');
+      assertPlannerAuthentication(candidateChannelEnabled, queryPlannerEnabled, authenticated);
       // RL-018: an unanchored request cannot enter the candidate channel — it is pinned to one
       // resolved entity by construction. Fall through to the task-text path rather than reject.
       if (candidateChannelEnabled && plannerAnchored(args)) {
@@ -663,6 +688,7 @@ export function registerRetrievalTools(
     { readOnlyHint: true, idempotentHint: true } satisfies ToolAnnotations,
     async (args) => {
       if (!assembler) throw new Error('Retrieval services not initialised');
+      assertPlannerAuthentication(candidateChannelEnabled, queryPlannerEnabled, authenticated);
       // RL-018: same routing as berry_context — berry_ask shares the constraint verbatim.
       if (candidateChannelEnabled && plannerAnchored(args)) {
         const receipt = await resolveRuntimeQueryPlannerAuthorityV1({

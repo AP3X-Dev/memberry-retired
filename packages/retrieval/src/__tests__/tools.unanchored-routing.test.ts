@@ -183,6 +183,50 @@ describe('RL-018 unanchored requests route to the task-text path', () => {
     expect(assembler.assemble).not.toHaveBeenCalled();
   });
 
+  // Routing must not become an authentication bypass. The first cut of this fix skipped the
+  // planner for unanchored requests, and the planner is where `authenticated` is checked — so
+  // omitting entity_scope silently bought an answer without authenticating. The gate caught it.
+  describe('authentication is orthogonal to anchoring', () => {
+    function unauthenticated(overrides: Partial<Parameters<typeof createRetrievalContainer>[0]>) {
+      const assembler = makeAssembler(emptyCtx());
+      const resolve = vi.fn();
+      const { server, handlers } = makeServerStub();
+      registerRetrievalTools(server as never, createRetrievalContainer({
+        assembler, tenantId: 'default', authenticated: false,
+        resolverFactory: () => ({ resolve }), ...overrides,
+      }));
+      return { assembler, resolve, handlers };
+    }
+
+    for (const [label, flags] of [
+      ['candidate channel on', { candidateChannelEnabled: true, queryPlannerEnabled: true }],
+      ['planner on, candidate off', { candidateChannelEnabled: false, queryPlannerEnabled: true }],
+    ] as const) {
+      it(`rejects an unanchored request from an unauthenticated caller (${label})`, async () => {
+        const { assembler, resolve, handlers } = unauthenticated(flags);
+
+        await expect(handlers.get('berry_context')!({ task: 'blocked' }))
+          .rejects.toThrow('runtime_query_planner:authentication_required');
+        await expect(handlers.get('berry_ask')!({ question: 'blocked' }))
+          .rejects.toThrow('runtime_query_planner:authentication_required');
+
+        expect(resolve).not.toHaveBeenCalled();
+        expect(assembler.assemble).not.toHaveBeenCalled();
+        expect(assembler.ask).not.toHaveBeenCalled();
+      });
+    }
+
+    it('with both switches off there is no planner to authenticate against — legacy path intact', async () => {
+      const { assembler, handlers } = unauthenticated({
+        candidateChannelEnabled: false, queryPlannerEnabled: false,
+      });
+
+      await handlers.get('berry_context')!({ task: 'legacy', strategy: 'ranked' });
+
+      expect(assembler.assemble).toHaveBeenCalledTimes(1);
+    });
+  });
+
   it('an anchored request whose entity does not resolve still fails loudly', async () => {
     // Naming an entity that is not there is a real answer, not a routing problem. It must not
     // silently downgrade into a broad task-text sweep.
