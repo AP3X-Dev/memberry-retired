@@ -476,6 +476,27 @@ not a re-pin: re-pinning is now permitted, but a re-pin is a deliberate act with
 it should be taken against the system as it will actually run — after the `berry_context` defect in
 `RESEARCH-LEDGER.md` RL-018, which currently makes one of four dev questions unscoreable.
 
+### 2026-08-29 — RL-018 fixed. The precondition named directly above is now met.
+
+`berry_context` and `berry_ask` no longer reject a request that names no entity; an unanchored
+request routes to the task-text path instead (`RESEARCH-LEDGER.md` RL-018, PR #130). This directly
+changes the instrument's inputs: `eval001-d-08` scored `nonRetrieval` at the origin and again on
+the 2026-08-28 dev run **because of this defect**, and the pending `eval001-d-04` is the same
+shape. Both become scoreable.
+
+**No number is claimed here.** This entry records a change to the system under test, not a run.
+
+**§3.2 does not literally enumerate this, and that is a gap worth stating.** The four voiding
+conditions are a re-index, a flag change, a re-selection, and a population discovery. This is none
+of them — it is an unflagged behaviour change on the retrieval path — yet it plainly makes prior
+`berry_context` results uncomparable, since a question that previously could not be answered now
+can be. The gap is recorded rather than patched: §3.2 is owner-governed and was last amended by an
+explicit owner decision (see the resolution above). Until then, treat this the way §3.2 item 2
+would be treated.
+
+**The re-pin is now unblocked and still not taken.** It remains a deliberate act with its own
+record, and per §5 it is never a way to escape a number.
+
 
 Later runs append rows here. **They do not touch section 2.** Rows are never edited,
 reordered, or deleted; a mistaken row is corrected by appending a correction row that
