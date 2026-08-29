@@ -60,6 +60,29 @@ OWNER_UID="$(stat -c %u "$WORKTREE")"
 OWNER_GID="$(stat -c %g "$WORKTREE")"
 echo "gate: node:${NODE_MAJOR}  worktree=${WORKTREE}  user=${OWNER_UID}:${OWNER_GID}"
 
+# A DIRTY WORKTREE FAILS THE RET-010 CUSTODY TESTS, AND THE FAILURE DOES NOT LOOK LIKE ONE.
+#
+# `bench/lab/ret010/dev-gate.cjs` pinPaths()/auditPinnedPaths() open with
+#   git rev-parse HEAD ... || git status --porcelain=v1 --untracked-files=all != '' -> reject()
+# so the finalizer refuses to pin sources it cannot prove match HEAD. That is the point of the
+# gate and is correct. But it rejects BEFORE opening a single file handle, so the test that
+# counts handles reports `expected [] to have a length of 62` -- which reads as a product defect
+# and is really one stray edited file anywhere in the tree.
+#
+# Demonstrated 2026-08-29: appending one comment line to an unrelated source file flips
+# "drains every retained finalizer owner once after an injected close failure" from pass to fail,
+# and `git checkout --` flips it straight back.
+#
+# Note `git clean -fd` is NOT sufficient to get here -- it removes untracked files but leaves
+# MODIFIED TRACKED ones, which is exactly the state that bites. This warns rather than refuses,
+# because running the gate on a work-in-progress tree is otherwise legitimate.
+DIRT="$(git -C "$WORKTREE" status --porcelain=v1 --untracked-files=all 2>/dev/null)"
+if [ -n "$DIRT" ]; then
+  echo "gate: WARNING -- worktree is NOT clean. The RET-010 custody tests will fail on this,"
+  echo "gate:            and the failure will look like a product defect. It is not one."
+  echo "$DIRT" | sed 's/^/gate:            /'
+fi
+
 docker run --rm --network host \
   --user "${OWNER_UID}:${OWNER_GID}" \
   -e HOME=/tmp \
@@ -80,5 +103,5 @@ grep -oE '^ *Tests +.*' "$WORKTREE/ws.log" 2>/dev/null \
   | grep -oE '[0-9]+ (passed|failed|skipped)' \
   | awk '{s[$2]+=$1} END {for (k in s) print k, s[k]}'
 
-echo "--- lab failures (expected: exactly 1, see the header) ---"
+echo "--- lab failures (expected: exactly 1, see the header -- more if the tree is dirty) ---"
 grep -oE '^ *Tests +.*' "$WORKTREE/lab.log" 2>/dev/null | tail -1

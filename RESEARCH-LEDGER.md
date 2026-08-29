@@ -487,6 +487,38 @@ deciding isolation first and plumbing second.
 
 ---
 
+### RL-020 — a dirty worktree fails the RET-010 custody tests, and the failure is unreadable
+**Evidence:** demonstrated (2026-08-29) · **Status:** mitigated in the harness · **Opened:** 2026-08-29
+
+`bench/lab/ret010/dev-gate.cjs` `pinPaths()` and `auditPinnedPaths()` both open with
+
+    git rev-parse HEAD != head  ||  git status --porcelain=v1 --untracked-files=all != ''  ->  reject()
+
+so the finalizer refuses to pin sources it cannot prove match HEAD. That is the custody guarantee
+and it is correct. The problem is the *shape* of the refusal: it rejects before opening a single
+file handle, so the test that counts handles reports `expected [] to have a length of 62 but got
++0` — which reads as a product defect and is really one stray edited file anywhere in the tree.
+
+**Demonstrated, not inferred.** On a clean worktree the test passes; appending a single comment
+line to an unrelated source file (`packages/neo4j/src/tenant.ts`) flips it to failing; `git
+checkout --` flips it straight back.
+
+**How it was found, which is the part worth keeping.** It surfaced as a lab failure on the RL-018
+branch, and a first comparison — master passes, branch fails — pointed straight at the change.
+That comparison was invalid: the branch checkout carried leftover uncommitted edits from an
+earlier session, so the variable under test was tree cleanliness, not the diff. **`git clean -fd`
+is not enough to prevent this** — it removes untracked files but leaves modified tracked ones,
+which is exactly the state that bites.
+
+**Distinct from RL-017.** RL-017 is a spawn timeout under load, affects a different test in each
+Node arm, and is load-dependent. This one is deterministic, reproduces in under a second, and has
+a named cause in the source. Two different known-red modes in the same file.
+
+**Mitigation:** `scripts/gate.sh` now runs `git status --porcelain=v1 --untracked-files=all`
+before the container starts and prints the offending paths with an explicit warning that the
+resulting failure is not a product defect. It warns rather than refuses, because gating a
+work-in-progress tree is otherwise legitimate.
+
 ### RL-018 — `berry_context` rejects a real call that names no entities
 **Evidence:** measured (2026-08-28) · **Status:** FIXED (2026-08-29) · **Opened:** 2026-08-28
 
