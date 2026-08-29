@@ -514,6 +514,18 @@ which is exactly the state that bites.
 Node arm, and is load-dependent. This one is deterministic, reproduces in under a second, and has
 a named cause in the source. Two different known-red modes in the same file.
 
+**Together they explain the "one stable known-red test", and removing both makes the lab green.**
+Measured 2026-08-29, node:22, clean worktree, no competing gate run: `LAB_EXIT=0`,
+`Test Files 68 passed (68)`, `Tests 2117 passed (2117)`. The lab is not unconditionally red. The
+count looked stable at one because two independent causes were running together — RL-017 supplying
+a moving identity under load, RL-020 supplying a fixed one whenever the tree was dirty.
+
+**The stale expectation was propagated in two places and both are corrected.** `scripts/gate.sh`
+and `.claude/agents/verifier.md` both instructed the reader that `LAB_EXIT=1` with one failure was
+the expected steady state. That is withdrawn: budgeting for a failure in advance is how a real
+regression gets waved through. Both now say expect zero, and both say to check tree cleanliness
+and concurrent runs before blaming a diff.
+
 **Mitigation:** `scripts/gate.sh` now runs `git status --porcelain=v1 --untracked-files=all`
 before the container starts and prints the offending paths with an explicit warning that the
 resulting failure is not a product defect. It warns rather than refuses, because gating a

@@ -48,9 +48,25 @@
 # for it under parallel load. The real fix is to raise those budgets or serialise the lab run, not
 # to filter anything out.
 #
-# So: LAB_EXIT=1 with exactly ONE failure is the expected steady state, but DO NOT assume it is
-# the same test as last time — read the log. TWO or more is a real regression and must be read. Do not "fix" this by filtering the test out — a gate you have taught
-# to ignore its own output is the thing this whole comment exists to prevent.
+# CORRECTED 2026-08-29: LAB_EXIT=1 IS NOT THE STEADY STATE. LAB_EXIT=0 IS.
+#
+# Measured this date on node:22, clean worktree, nothing else competing for the box:
+# LAB_EXIT=0, `Test Files 68 passed (68)`, `Tests 2117 passed (2117)`. The lab is not
+# unconditionally red, and the earlier "expected steady state" wording was wrong — it taught the
+# reader to expect a failure, which is exactly how a real regression gets waved through.
+#
+# The lab goes red under two SEPARATE and independently avoidable conditions:
+#   1. Parallel load, which trips one of the seven tight spawn budgets above (this block).
+#      Load-dependent, so the identity of the failing test moves. RESEARCH-LEDGER.md RL-017.
+#   2. A dirty worktree, which makes the RET-010 custody check reject before opening a handle.
+#      Deterministic, reproduces in under a second, and reports as `expected [] to have a
+#      length of 62`. RESEARCH-LEDGER.md RL-020, and the preflight warning below.
+#
+# Both had been running together, which is why the count looked stable at one while the identity
+# moved. Remove both — clean tree, one gate at a time — and the correct expectation is ZERO
+# failures. Read any failure; do not budget for one in advance. And do not "fix" this by
+# filtering the test out — a gate you have taught to ignore its own output is the thing this
+# whole comment exists to prevent.
 set -eu
 
 NODE_MAJOR="${1:?usage: gate.sh <node-major> <worktree>}"
@@ -103,5 +119,5 @@ grep -oE '^ *Tests +.*' "$WORKTREE/ws.log" 2>/dev/null \
   | grep -oE '[0-9]+ (passed|failed|skipped)' \
   | awk '{s[$2]+=$1} END {for (k in s) print k, s[k]}'
 
-echo "--- lab failures (expected: exactly 1, see the header -- more if the tree is dirty) ---"
+echo "--- lab failures (expected: ZERO on a clean tree with no competing run -- see the header) ---"
 grep -oE '^ *Tests +.*' "$WORKTREE/lab.log" 2>/dev/null | tail -1
