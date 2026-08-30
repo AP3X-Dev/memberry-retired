@@ -25,6 +25,27 @@ evidence that corrected it does not live only in someone's head.
 
 ## Open
 
+### RL-025 — Broad structured-link expansion wins more cases but is not monotone
+**Evidence:** measured · **Status:** rejected arm · **Opened:** 2026-08-30
+
+On the frozen 60-case multi-hop v4 dev set, inserting one linked neighbour after
+every top-five seed moved success@10 from **28/60 to 40/60** (+20.0 percentage
+points, paired 95% bootstrap interval [+3.3,+36.7]) but traded **19 improvements
+for 7 regressions**. A latch that preserved any already-connected top-five set
+still scored 27/60; a broader delivered-query-chain latch preserved 28/60 but
+blocked every gain.
+
+The accepted rule expands only a seed that already references the query-planner
+target. It scored **36/60** (+13.3 points, interval [+5.0,+23.3]) with **8
+improvements and 0 regressions**. This is why the production candidate traverses
+from authorized query-target episodes instead of every high-ranked episode.
+
+**Revisit when:** a new frozen instrument version carries canonical entity IDs
+directly or a production trace proves the narrower rule misses a safe class of
+links. Do not revive either latch or broad expansion on the current v4 set.
+
+---
+
 ### RL-001 — The BM25F reranker's value is unproven
 **Evidence:** measured · **Status:** deferred · **Opened:** 2026-08-27 (PR #123)
 

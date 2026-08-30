@@ -101,23 +101,26 @@ else is either design detail or a historical record.
 
 ## NEXT ACTION
 
-### IDX-001A — Write-time structured indexing
+### IDX-001A — Production qualification of the local winner
 
-Persist optional, validated atomic facts, canonical entity references, and
-entity-bound aliases when an episode is stored. Treat them as additive derived
-retrieval keys: original episode bytes remain unchanged, query time stays
-model-free, and one default-off flag makes the reader inert.
+The implementation is complete on `autoresearch/idx-001a-20260830` and remains
+undeployed/default-off. The frozen 60-case dev gate moved from **28/60 (46.7%)**
+to **36/60 (60.0%)** multi-hop success@10: **+13.3 percentage points**, paired
+95% bootstrap interval **[+5.0, +23.3]**, eight improved cases and zero
+regressions. The broad first arm reached 40/60 but regressed seven prior wins;
+the accepted arm expands only query-target seeds.
 
-1. Require closed bounded inputs and exact tenant/project authorization for every
-   referenced entity; reject malformed structure before any episode is written.
-2. Persist derived keys atomically with their source episode and provenance.
-3. Provide a resumable, idempotent, resource-capped local-model backfill and a
-   rollback that deletes only derived keys.
-4. Accept only if the frozen 60-case multi-hop dev set improves by at least 10
-   percentage points with a positive confidence bound, while the 34-case memory
-   gate remains 34/34, p95 stays <=500 ms, and responses stay <=32 KiB.
-5. Stop after Phase A if the measured multi-hop gain is not meaningful; do not
-   proceed into a larger graph-instrument expansion without evidence.
+1. Review and merge the default-off candidate without changing the accepted
+   retrieval rule or frozen instrument.
+2. Deploy with `MEMBERRY_EPISODIC_STRUCTURED_INDEX_V1` off; prove the existing
+   34-case memory gate remains 34/34 and the response/latency caps hold.
+3. Run a bounded local-model backfill pilot for `project:memberry`, record status,
+   then enable the reader and repeat two production probes.
+4. Keep only if production p95 is <=500 ms, responses are <=32 KiB, leakage and
+   provenance checks stay clean, and the gain survives. Roll back by disabling
+   the reader and deleting only scoped `EpisodicIndexKey` nodes.
+5. Resume RET-007 only after this qualification closes; do not broaden Phase B
+   if the production result does not confirm the local evidence.
 
 ### Historical measurement-first direction (superseded by RET-Q-005)
 
@@ -591,7 +594,9 @@ freeze G3, G6, or G8 indefinitely.
   identity) needs a NEW graph-carrying instrument version — lab scenarios carry
   no entity fields today, so budget that apparatus cost before Phase B, not
   after. Ships with the D-DOCS agent-guidance deliverable in the same change as
-  the schema.
+  the schema. `(IDX-001A implemented locally on autoresearch/idx-001a-20260830;
+  frozen dev 28/60 -> 36/60 success@10, +13.3pp, paired 95% CI [+5.0,+23.3],
+  8 improved/0 regressed. Pending merge and default-off production qualification.)`
 - [ ] RETURN POINT: RET-007 multi-hop — resume AFTER IDX-001, not before.
   Measured 2026-08-25 (advisor log Findings 3 and 4): the query-time mechanism
   now recovers the withheld second hop in 13 of 14 calib scenarios, up from 0,

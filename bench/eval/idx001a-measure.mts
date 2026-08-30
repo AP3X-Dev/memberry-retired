@@ -43,7 +43,7 @@ const lower = samples[Math.floor(samples.length * 0.025)]!;
 const upper = samples[Math.floor(samples.length * 0.975)]!;
 console.log(JSON.stringify({
   n: scenarios.length, controlSuccess, candidateSuccess,
-  controlAnswerAt5: controlSuccess / scenarios.length,
-  candidateAnswerAt5: candidateSuccess / scenarios.length,
+  controlMultiHopSuccessAt10: controlSuccess / scenarios.length,
+  candidateMultiHopSuccessAt10: candidateSuccess / scenarios.length,
   delta, interval95: [lower, upper], improved, regressed,
 }));
