@@ -110,6 +110,13 @@ to **36/60 (60.0%)** multi-hop success@10: **+13.3 percentage points**, paired
 regressions. The broad first arm reached 40/60 but regressed seven prior wins;
 the accepted arm expands only query-target seeds.
 
+The pre-deploy production probe initially read 33/34 at five because `om-05`
+still named RET-Q-001 as the active next-sprint source after the approved
+IDX-001A decision had superseded it. Its unchanged query already returned the
+new approved decision at rank 2. The oracle now retains both historical IDs and
+adds the superseding decision under an explicit 2026-08-30 audit field; no query,
+ranking code, threshold, or prior acceptable evidence was removed.
+
 1. Review and merge the default-off candidate without changing the accepted
    retrieval rule or frozen instrument.
 2. Deploy with `MEMBERRY_EPISODIC_STRUCTURED_INDEX_V1` off; prove the existing
