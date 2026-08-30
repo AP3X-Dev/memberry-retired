@@ -1,4 +1,4 @@
-import type { Driver } from 'neo4j-driver';
+import neo4j, { type Driver } from 'neo4j-driver';
 import type { EpisodeIndexKeyNodeV1 } from '@memberry/core';
 
 export interface EpisodicIndexCursorV1 { createdAt: string; id: string }
@@ -40,7 +40,7 @@ export class EpisodicIndexStore {
           projectScope: input.projectScope,
           afterCreatedAt: input.after?.createdAt ?? null,
           afterId: input.after?.id ?? '',
-          limit: input.limit,
+          limit: neo4j.int(input.limit),
         },
       );
       return result.records.map((record) => ({

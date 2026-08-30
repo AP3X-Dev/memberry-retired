@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
+import neo4j from 'neo4j-driver';
 import type { Driver } from 'neo4j-driver';
 import type { EpisodeIndexKeyNodeV1 } from '@memberry/core';
 import { EpisodicIndexStore } from '../episodic-index.js';
@@ -23,8 +24,10 @@ describe('IDX-001A backfill store', () => {
     expect(run.mock.calls[0]![0]).toContain('NOT EXISTS { (ep)-[:HAS_INDEX_KEY]');
     expect(run.mock.calls[0]![0]).toContain('NOT EXISTS { (ep)-[:HAS_INDEX_OUTCOME]');
     expect(run.mock.calls[0]![1]).toMatchObject({
-      tenantId: 'tenant-a', projectScope: 'project:memberry', afterId: 'ep1', limit: 10,
+      tenantId: 'tenant-a', projectScope: 'project:memberry', afterId: 'ep1',
     });
+    expect(neo4j.isInt(run.mock.calls[0]![1].limit)).toBe(true);
+    expect(run.mock.calls[0]![1].limit.toNumber()).toBe(10);
     expect(rows).toEqual([expect.objectContaining({ id: 'ep2', tenantId: 'tenant-a' })]);
     expect(close).toHaveBeenCalledOnce();
   });
