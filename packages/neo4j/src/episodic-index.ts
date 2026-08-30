@@ -101,14 +101,20 @@ export class EpisodicIndexStore {
   async deleteDerived(input: { tenantId: string; projectScope: string }): Promise<number> {
     const session = this.driver.session();
     try {
-      const result = await session.run(
-        `MATCH (key:EpisodicIndexKey {tenant_id: $tenantId, project_scope: $projectScope})
-         WITH collect(key) AS keys, count(key) AS count
-         FOREACH (key IN keys | DETACH DELETE key)
-         RETURN count`,
-        input,
-      );
-      return Number(result.records[0]?.get('count') ?? 0);
+      return await session.executeWrite(async (tx) => {
+        const result = await tx.run(
+          `MATCH (key:EpisodicIndexKey {tenant_id: $tenantId, project_scope: $projectScope})
+           RETURN count(key) AS count`,
+          input,
+        );
+        const count = Number(result.records[0]?.get('count') ?? 0);
+        await tx.run(
+          `MATCH (key:EpisodicIndexKey {tenant_id: $tenantId, project_scope: $projectScope})
+           DETACH DELETE key`,
+          input,
+        );
+        return count;
+      });
     } finally {
       await session.close();
     }

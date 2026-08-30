@@ -863,6 +863,13 @@ export class AMPService {
     // (unmark) before rethrowing, otherwise a retry of identical content would be
     // silently swallowed as a duplicate for the 24h TTL — losing the memory.
     try {
+    // Derived nodes and their episode/entity links must commit together. Reject
+    // before either the content or derived-key embedding providers do work, but
+    // after dedup is marked so the common rollback path releases that marker.
+    if (structuredIndex && !this.neo4j.episodic.createWithLinks) {
+      throw new Error('structured_index:atomic_store_unavailable');
+    }
+
     // Reserve capacity after accepted dedup and before embedding. No
     // preprocessing happens yet: all safe facts are derived at the terminal
     // seam from values the baseline itself read and persisted.
@@ -932,9 +939,6 @@ export class AMPService {
     // duplicate). Fall back to create()+concurrent links for layers/mocks without
     // it (behavior preserved). Signals stay a separate step (5) — they carry
     // Redis side-effects that can't join the Neo4j transaction.
-    if (structuredIndex && !this.neo4j.episodic.createWithLinks) {
-      throw new Error('structured_index:atomic_store_unavailable');
-    }
     if (this.neo4j.episodic.createWithLinks) {
       const links = {
         agentId: input.agent_id,
