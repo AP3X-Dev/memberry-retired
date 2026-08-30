@@ -4,7 +4,7 @@
 // Usage: npx memberry <command> [options]
 
 import { execFileSync } from 'child_process';
-import { createNeo4jDriver, TenantAdmin, LifecycleStore } from '@memberry/neo4j';
+import { createNeo4jDriver, TenantAdmin, LifecycleStore, EpisodicIndexStore } from '@memberry/neo4j';
 import { writeFileSync } from 'fs';
 import { createRedisClient, ProposalStore, EpisodicBuffer } from '@memberry/redis';
 import { exportAll, exportFiltered } from './export.js';
@@ -23,6 +23,10 @@ import { LifecycleEngine } from './lifecycle.js';
 import { AntiEntropyEngine, type AntiEntropyRunResult } from './anti-entropy.js';
 import { HebbianEngine, type HebbianRunResult } from './hebbian.js';
 import { resolveAntiEntropyConfig, resolveHebbianConfig, resolveLifecycleConfig } from './config/lifecycle.js';
+import { OpenAiLlmClient } from './llm.js';
+import { extractEpisodeStructuredIndexV1 } from './structured-index-extractor.js';
+import { buildEpisodeIndexKeysV1 } from './structured-index.js';
+import { DEFAULT_TENANT } from './types.js';
 
 // ─── Arg parsing ──────────────────────────────────────────────────────────────
 
@@ -180,6 +184,93 @@ async function runDream(flags: Record<string, string | boolean>): Promise<void> 
       ...(noCards ? { cards: false } : {}),
     });
     console.log(JSON.stringify(result, null, 2));
+  } finally {
+    await core.close();
+  }
+}
+
+function boundedIntFlag(flags: Record<string, string | boolean>, name: string, fallback: number, max: number): number {
+  const value = flags[name] === undefined ? fallback : Number(flags[name]);
+  if (!Number.isInteger(value) || value < 1 || value > max) throw new Error(`--${name} must be an integer in 1..${max}`);
+  return value;
+}
+
+async function runIndexBackfill(positionals: string[], flags: Record<string, string | boolean>): Promise<void> {
+  const action = positionals[0] ?? 'status';
+  const projectScope = String(flags['scope'] ?? '');
+  const tenantId = String(flags['tenant'] ?? DEFAULT_TENANT);
+  if (!/^project:[a-z0-9][a-z0-9._-]*$/.test(projectScope)) {
+    throw new Error('Pass canonical --scope project:<name>');
+  }
+  const core = createCoreServices();
+  const store = new EpisodicIndexStore(core.driver);
+  try {
+    if (action === 'status') {
+      console.log(JSON.stringify(await store.stats({ tenantId, projectScope }), null, 2));
+      return;
+    }
+    if (action === 'reset') {
+      if (flags['yes'] !== true) throw new Error('index-backfill reset requires --yes');
+      const deleted = await store.deleteDerived({ tenantId, projectScope });
+      console.log(JSON.stringify({ deleted, tenant: tenantId, scope: projectScope }));
+      return;
+    }
+    if (action !== 'run') throw new Error('index-backfill action must be run, status, or reset');
+    if (flags['yes'] !== true) throw new Error('index-backfill run requires --yes');
+    if (core.embedding.available === false) throw new Error('index-backfill requires a configured embedding provider');
+
+    const endpoint = String(flags['endpoint'] ?? process.env['MEMBERRY_INDEXER_BASE_URL'] ?? 'http://127.0.0.1:11434/v1');
+    const parsedEndpoint = new URL(endpoint);
+    if (!['127.0.0.1', 'localhost', '::1'].includes(parsedEndpoint.hostname)) {
+      throw new Error('index-backfill endpoint must be local loopback');
+    }
+    const model = String(flags['model'] ?? process.env['MEMBERRY_INDEXER_MODEL'] ?? 'qwen2.5:3b-instruct');
+    const maxEpisodes = boundedIntFlag(flags, 'max-episodes', 100, 10_000);
+    const batchSize = boundedIntFlag(flags, 'batch-size', 10, 100);
+    const timeoutSeconds = boundedIntFlag(flags, 'timeout-seconds', 60, 600);
+    const delayMs = boundedIntFlag(flags, 'delay-ms', 250, 5_000);
+    const llm = new OpenAiLlmClient('local-indexer', { extraction: model }, parsedEndpoint.toString());
+    let cursor: { createdAt: string; id: string } | undefined;
+    let examined = 0;
+    let indexed = 0;
+    let empty = 0;
+    let failed = 0;
+
+    while (examined < maxEpisodes) {
+      const batch = await store.nextBackfillBatch({
+        tenantId, projectScope, limit: Math.min(batchSize, maxEpisodes - examined), ...(cursor ? { after: cursor } : {}),
+      });
+      if (batch.length === 0) break;
+      for (const episode of batch) {
+        examined += 1;
+        cursor = { createdAt: episode.createdAt, id: episode.id };
+        const controller = new AbortController();
+        const timer = setTimeout(() => controller.abort(), timeoutSeconds * 1_000);
+        timer.unref?.();
+        try {
+          const structured = await extractEpisodeStructuredIndexV1({
+            content: episode.content, projectScope, llm, model, signal: controller.signal,
+          });
+          if (!structured) { empty += 1; continue; }
+          const texts = [...structured.facts, ...structured.aliases.flatMap(({ values }) => values)];
+          const keys = buildEpisodeIndexKeysV1({
+            episodeId: episode.id,
+            structured,
+            embeddings: await core.embedding.embedBatch(texts),
+            source: 'backfill', tenantId, projectScope, createdAt: new Date().toISOString(),
+          });
+          await store.replaceBackfillKeys(episode, keys);
+          indexed += 1;
+        } catch {
+          failed += 1;
+        } finally {
+          clearTimeout(timer);
+        }
+        if (delayMs > 0) await new Promise((resolve) => setTimeout(resolve, delayMs));
+      }
+    }
+    console.log(JSON.stringify({ examined, indexed, empty, failed, tenant: tenantId, scope: projectScope, model }));
+    if (failed > 0) process.exitCode = 2;
   } finally {
     await core.close();
   }
@@ -370,6 +461,10 @@ async function main(): Promise<void> {
       await runDream(flags);
       break;
 
+    case 'index-backfill':
+      await runIndexBackfill(positionals, flags);
+      break;
+
     case 'lifecycle':
       // `memberry lifecycle [--scope project:x] [--dry-run]` — flag-gated pass;
       // `memberry lifecycle unarchive --id <id>` — reverse one archive.
@@ -440,6 +535,7 @@ async function main(): Promise<void> {
       console.error('  dream      [--scope project:x] [--max-entities N] [--no-cards]');
       console.error('  lifecycle  [--scope project:x] [--dry-run] | unarchive --id <id>   (MEMBERRY_LIFECYCLE_V1=live gates the pass; MEMBERRY_LIFECYCLE_ANTIENTROPY=live adds the anti-entropy pass)');
       console.error('  extraction status|replay   (durable fact-extraction queue: counts / replay dead-letters)');
+      console.error('  index-backfill run|status|reset --scope project:x [--tenant t] [--yes]   (IDX-001A local-model derived keys)');
       console.error('  tenant stats|export|delete --tenant <name> [--out file] [--yes]   (per-tenant admin)');
       console.error('');
       console.error('Agent hook commands:');

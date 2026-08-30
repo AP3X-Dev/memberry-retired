@@ -1,6 +1,11 @@
 // packages/neo4j/src/episodic.ts
 import { type Driver } from 'neo4j-driver';
-import { DEFAULT_TENANT, type EpisodicNode, type Signal } from '@memberry/core';
+import {
+  DEFAULT_TENANT,
+  type EpisodeIndexKeyNodeV1,
+  type EpisodicNode,
+  type Signal,
+} from '@memberry/core';
 import { temporalSetClause } from './temporal-edges.js';
 import { archivedWhere } from './query.js';
 
@@ -75,10 +80,47 @@ export class EpisodicStore {
   async createWithLinks(
     node: EpisodicNode,
     links: { agentId?: string; entityIds?: string[]; modelId?: string },
+    indexKeys?: readonly EpisodeIndexKeyNodeV1[],
   ): Promise<string> {
     const session = this.driver.session();
     try {
       return await session.executeWrite(async (tx) => {
+        if (indexKeys && indexKeys.length > 0) {
+          if (!node.scope || !/^project:[a-z0-9][a-z0-9._-]*$/.test(node.scope)) {
+            throw new Error('structured_index:canonical_project_scope_required');
+          }
+          const tenantId = node.tenant_id ?? DEFAULT_TENANT;
+          const entityIds = [...new Set(links.entityIds ?? [])];
+          if (entityIds.length > 0) {
+            // Authorize every supplied Entity ID against exactly one path from
+            // this tenant's project root before creating either the episode or
+            // its derived keys. A foreign or ambiguous ID rejects atomically.
+            const authorized = await tx.run(
+              `UNWIND $entityIds AS entityId
+               MATCH (root:Entity {type: 'project'})
+               WHERE toLower(root.name) = substring($projectScope, 8)
+                 AND (root.tenant_id = $tenantId OR (root.tenant_id IS NULL AND $tenantId = $defaultTenant))
+               MATCH path = (root)-[:CONTAINS*0..64]->(entity:Entity {id: entityId})
+               WHERE all(scopedNode IN nodes(path) WHERE
+                 scopedNode.tenant_id IS NULL OR scopedNode.tenant_id = $tenantId)
+               WITH entityId, count(DISTINCT path) AS pathCount
+               WHERE pathCount = 1
+               RETURN collect(entityId) AS ids`,
+              { entityIds, projectScope: node.scope, tenantId, defaultTenant: DEFAULT_TENANT },
+            );
+            const ids = (authorized.records[0]?.get('ids') as string[] | undefined) ?? [];
+            if (ids.length !== entityIds.length || entityIds.some((id) => !ids.includes(id))) {
+              throw new Error('structured_index:entity_out_of_scope');
+            }
+          }
+          for (const key of indexKeys) {
+            if (key.episode_id !== node.id || key.tenant_id !== tenantId || key.project_scope !== node.scope
+              || (key.entity_id !== undefined && !entityIds.includes(key.entity_id))) {
+              throw new Error('structured_index:key_authority_mismatch');
+            }
+          }
+        }
+
         const { query, params } = this.buildCreate(node);
         await tx.run(query, params);
 
@@ -104,6 +146,28 @@ export class EpisodicStore {
             `MATCH (e:Episodic {id: $episodicId}), (m:Model {id: $modelId})
              MERGE (e)-[:USED_MODEL]->(m)`,
             { episodicId: node.id, modelId: links.modelId },
+          );
+        }
+        if (indexKeys && indexKeys.length > 0) {
+          await tx.run(
+            `UNWIND $indexKeys AS key
+             MATCH (e:Episodic {id: $episodicId})
+             CREATE (k:EpisodicIndexKey {
+               id: key.id,
+               episode_id: key.episode_id,
+               kind: key.kind,
+               value: key.value,
+               entity_id: key.entity_id,
+               embedding: key.embedding,
+               schema_version: key.schema_version,
+               source: key.source,
+               source_hash: key.source_hash,
+               tenant_id: key.tenant_id,
+               project_scope: key.project_scope,
+               created_at: key.created_at
+             })
+             MERGE (e)-[:HAS_INDEX_KEY]->(k)`,
+            { episodicId: node.id, indexKeys },
           );
         }
         return node.id;

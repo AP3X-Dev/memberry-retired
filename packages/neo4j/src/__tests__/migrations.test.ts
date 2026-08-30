@@ -145,13 +145,14 @@ describe('runMigrations', () => {
         '0008-evidence-authority-ledger-v1',
         '0009-semantic-lifecycle-backfill',
         '0010-prune-unserved-derived-indexes',
+        '0011-episodic-structured-index',
       ],
     });
     expect(schemaStatements.filter((statement) => statement.includes('admission_observation')))
       .toHaveLength(4);
     expect(schemaStatements.filter((statement) => statement.includes('evidence_authority')))
       .toHaveLength(13);
-    expect(schemaStatements).toHaveLength(25);
+    expect(schemaStatements).toHaveLength(29);
     expect(schemaStatements.filter((s) => /^\s*CREATE\s/i.test(s)).every((s) => s.includes('IF NOT EXISTS'))).toBe(true);
     expect(schemaStatements.filter((s) => /^\s*MATCH\s/i.test(s)).every((s) => /IS NULL/.test(s))).toBe(true);
     expect(schemaStatements.filter((s) => /^\s*DROP INDEX\s/i.test(s)).every((s) => /IF EXISTS/.test(s))).toBe(true);
@@ -229,6 +230,7 @@ describe('runMigrations', () => {
         '0008-evidence-authority-ledger-v1',
         '0009-semantic-lifecycle-backfill',
         '0010-prune-unserved-derived-indexes',
+        '0011-episodic-structured-index',
       ],
     });
     expect(schemaStatements.length).toBeGreaterThan(10);

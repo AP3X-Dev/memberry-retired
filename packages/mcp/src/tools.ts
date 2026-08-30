@@ -298,7 +298,14 @@ export const AmpStoreSchema = {
   session_id: z.string().max(500).describe('Session identifier'),
   task: z.string().max(5000).describe('Task description for this episode'),
   content: z.string().max(10000).describe('Episodic content to store'),
-  entities: z.array(z.string().max(500)).optional().describe('Entity IDs to link to this episode'),
+  entities: z.array(z.string().max(200)).max(32).optional().describe('Canonical Entity IDs to link to this episode'),
+  facts: z.array(z.string().max(500)).max(32).optional()
+    .describe('Atomic single-clause facts used as additive retrieval keys; requires canonical project scope'),
+  aliases: z.array(z.object({
+    entity_id: z.string().max(200),
+    values: z.array(z.string().max(500)).min(1).max(16),
+  }).strict()).max(32).optional()
+    .describe('Entity-bound aliases used as additive retrieval keys; entity_id must also appear in entities'),
   model_id: z.string().max(500).optional().describe('Model ID to link to this episode'),
   scope: z.string().max(500).optional().describe('Canonical scope for this episode, usually project:<name>'),
   tags: z.array(z.string().max(500)).optional().describe('Tags for this episode. Include project:<name> for project scoping.'),
@@ -483,6 +490,8 @@ export type ToolHandlers = {
     memory_type?: 'decision' | 'pattern' | 'convention' | 'architecture' | 'preference' | 'fact' | 'general';
     signals?: Array<{ type: 'reinforcement' | 'correction' | 'contradiction'; target_id: string; detail: string }>;
     entities?: string[];
+    facts?: string[];
+    aliases?: Array<{ entity_id: string; values: string[] }>;
     model_id?: string;
     scope?: string;
     tags?: string[];
@@ -601,6 +610,8 @@ export function buildToolHandlers(container: ServiceContainer = defaultContainer
         memory_type: args.memory_type,
         signals: args.signals,
         entities: args.entities,
+        facts: args.facts,
+        aliases: args.aliases,
         model_id: args.model_id,
         scope: args.scope,
         tags: args.tags,
@@ -1753,4 +1764,3 @@ export const DOMAIN_TOOL_NAMES_MAP: Record<ToolDomain, string[]> = {
   retrieval: ['berry_feedback'],
   graph: ['berry_graph_report', 'berry_graph_export', 'berry_pr_impact', 'berry_pr_conflicts'],
 };
-

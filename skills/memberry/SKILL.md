@@ -31,6 +31,8 @@ Store decisions, corrections, preferences, reusable root causes, conventions, ar
 - Signals must target an existing Semantic ID, never an episodic or Entity ID. Verify current evidence before correction or contradiction.
 - Verify the returned episode ID. `duplicate:true` means no new episode was created.
 
+Attach structure already derived from the stored content when it can be stated confidently: `facts` are independently true, atomic single-clause statements; `entities` are canonical IDs already resolved in the same project; `aliases` bind alternate surface forms to one of those IDs. Derive these fields only from the content being stored, never from unstored conversation context. Prefer omission to a guess, never include secrets, never invent an Entity ID, and do not restate the whole memory as one fact. The fields are bounded advisory retrieval keys; malformed structure rejects the store and never rewrites the original memory.
+
 Read the exact store, signal, feedback, consolidation, ingestion, and wiki schemas in [reference/memberry-tool-reference.md](reference/memberry-tool-reference.md) only when constructing those calls. Inspect the live schema before using any on-demand tool.
 
 ## Trust the autonomous lifecycle

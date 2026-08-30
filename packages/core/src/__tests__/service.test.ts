@@ -741,6 +741,47 @@ describe('AMPService.store — atomic episode persistence (OPT-53)', () => {
     expect(neo4j.episodic.linkToEntity).toHaveBeenCalledWith(expect.any(String), 'ent-1');
     expect(neo4j.episodic.linkToModel).toHaveBeenCalledWith(expect.any(String), 'model-9');
   });
+
+  it('embeds and atomically persists validated structured keys without rewriting content', async () => {
+    const createWithLinks = vi.fn().mockResolvedValue('ep-structured');
+    const neo4j = makeNeo4j();
+    (neo4j.episodic as Record<string, unknown>).createWithLinks = createWithLinks;
+    const embedding = makeEmbedding();
+    vi.mocked(embedding.embedBatch).mockResolvedValue([
+      new Array(1536).fill(0.2), new Array(1536).fill(0.3),
+    ]);
+    const service = new AMPService(makeRedis(), neo4j, embedding, makeConfig());
+
+    await service.store({
+      session_id: 's', agent_id: 'agent-1', task: 't',
+      content: 'Sensor Gale is maintained by Team Nimbus.',
+      scope: 'project:memberry', tags: ['project:memberry'], entities: ['entity-gale'],
+      facts: ['Sensor Gale is maintained by Team Nimbus.'],
+      aliases: [{ entity_id: 'entity-gale', values: ['Gale'] }],
+    });
+
+    expect(embedding.embed).toHaveBeenCalledWith('Sensor Gale is maintained by Team Nimbus.');
+    expect(embedding.embedBatch).toHaveBeenCalledWith([
+      'Sensor Gale is maintained by Team Nimbus.', 'Gale',
+    ]);
+    const [node, links, keys] = createWithLinks.mock.calls[0]!;
+    expect(node.content).toBe('Sensor Gale is maintained by Team Nimbus.');
+    expect(links).toEqual({ agentId: 'agent-1', entityIds: ['entity-gale'] });
+    expect(keys).toHaveLength(2);
+    expect(keys.map((key: { kind: string }) => key.kind)).toEqual(['fact', 'alias']);
+    expect(keys.every((key: { tenant_id: string; project_scope: string }) =>
+      key.tenant_id === 'default' && key.project_scope === 'project:memberry')).toBe(true);
+  });
+
+  it('refuses structured writes when atomic persistence is unavailable', async () => {
+    const redis = makeRedis();
+    const service = new AMPService(redis, makeNeo4j(), makeEmbedding(), makeConfig());
+    await expect(service.store({
+      session_id: 's', agent_id: 'agent-1', task: 't', content: 'A uses B',
+      scope: 'project:memberry', tags: ['project:memberry'], facts: ['A uses B'],
+    })).rejects.toThrow('structured_index:atomic_store_unavailable');
+    expect(redis.dedup.unmark).toHaveBeenCalledOnce();
+  });
 });
 
 // ─── OPT-19: dedup key rollback on persistence failure ──────────────────────

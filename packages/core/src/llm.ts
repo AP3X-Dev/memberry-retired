@@ -55,8 +55,8 @@ export class OpenAiLlmClient implements LlmClient {
   private client: OpenAI;
   private models: Record<LlmTask, string>;
 
-  constructor(apiKey: string, modelOverrides: Partial<Record<LlmTask, string>> = {}) {
-    this.client = new OpenAI({ apiKey });
+  constructor(apiKey: string, modelOverrides: Partial<Record<LlmTask, string>> = {}, baseURL?: string) {
+    this.client = new OpenAI({ apiKey, ...(baseURL ? { baseURL } : {}) });
     this.models = {
       extraction: modelOverrides.extraction ?? DEFAULT_MODELS.extraction,
       synthesis: modelOverrides.synthesis ?? DEFAULT_MODELS.synthesis,

@@ -310,6 +310,39 @@ export const MIGRATIONS: Migration[] = [
       }
     },
   },
+  {
+    id: '0011-episodic-structured-index',
+    description: 'Add reversible derived episodic index-key schema for IDX-001A.',
+    up: async (driver) => {
+      const session = driver.session();
+      try {
+        for (const statement of [
+          'CREATE CONSTRAINT episodic_index_key_id IF NOT EXISTS FOR (k:EpisodicIndexKey) REQUIRE k.id IS UNIQUE',
+          'CREATE INDEX episodic_index_key_episode IF NOT EXISTS FOR (k:EpisodicIndexKey) ON (k.episode_id)',
+          'CREATE INDEX episodic_index_key_scope IF NOT EXISTS FOR (k:EpisodicIndexKey) ON (k.tenant_id, k.project_scope)',
+          `CREATE VECTOR INDEX episodic_index_key_embedding IF NOT EXISTS FOR (k:EpisodicIndexKey) ON (k.embedding) OPTIONS {indexConfig: {\`vector.dimensions\`: ${EMBEDDING_DIM}, \`vector.similarity_function\`: 'cosine'}}`,
+        ]) await session.run(statement);
+      } finally {
+        await session.close();
+      }
+    },
+    down: async (driver) => {
+      const session = driver.session();
+      try {
+        // Schema rollback is non-destructive: derived nodes remain available for
+        // inspection or retry. `memberry index-backfill reset` deletes only
+        // EpisodicIndexKey nodes when the operator explicitly requests it.
+        for (const statement of [
+          'DROP INDEX episodic_index_key_embedding IF EXISTS',
+          'DROP INDEX episodic_index_key_scope IF EXISTS',
+          'DROP INDEX episodic_index_key_episode IF EXISTS',
+          'DROP CONSTRAINT episodic_index_key_id IF EXISTS',
+        ]) await session.run(statement);
+      } finally {
+        await session.close();
+      }
+    },
+  },
 ];
 
 export interface MigrationResult {

@@ -1,5 +1,7 @@
 // packages/core/src/index.ts
 export * from './types.js';
+export * from './structured-index.js';
+export * from './structured-index-extractor.js';
 export { OpenAIEmbedding } from './embedding.js';
 export { CachingEmbeddingProvider } from './caching-embedding.js';
 export type { EmbeddingCachePort } from './caching-embedding.js';

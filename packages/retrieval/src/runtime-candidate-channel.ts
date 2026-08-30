@@ -50,6 +50,7 @@ const SAFE_PROJECT = /^project:[a-z0-9][a-z0-9._-]*$/;
 // leading "_" or "-". Keep this evidence-only grammar aligned with persisted
 // IDs so one valid row cannot fail the entire source channel.
 const SAFE_EVIDENCE_ID = /^[A-Za-z0-9_-][A-Za-z0-9._:@/+~-]*$/;
+export const EPISODIC_STRUCTURED_INDEX_FLAG = 'MEMBERRY_EPISODIC_STRUCTURED_INDEX_V1';
 const EXPECTED_FIELDS = FREEZE([
   'tenantId', 'projectScope', 'resolvedEntityId', 'evidenceId', 'title', 'content', 'score',
 ]);
@@ -180,6 +181,38 @@ WHERE (ep.tenant_id = $tenantId OR (ep.tenant_id IS NULL AND $tenantId = $defaul
     OR ($asOf IS NOT NULL AND coalesce(r.valid_at, '1970-01-01T00:00:00.000Z') <= $asOf
       AND (r.invalid_at IS NULL OR r.invalid_at > $asOf)))
 WITH DISTINCT root, target, ep, vector.similarity.cosine(ep.embedding, $queryVector) AS score
+WHERE score IS NOT NULL
+WITH root, target, ep.id AS evidenceId,
+     coalesce(ep.memory_type, 'Episodic') AS title,
+     CASE WHEN coalesce(ep.task, '') = '' THEN ep.content ELSE ep.task + '\n\n' + ep.content END AS content,
+     score
+${COMMON_RETURN}`;
+
+// IDX-001A: same authority proof, temporal filter, evidence identity, content,
+// and channel as EPISODIC_VECTOR_QUERY. The only delta is the score: an episode
+// may be reached by its original embedding or by one of its persisted derived
+// keys. Keys are re-qualified to the authenticated tenant/project even though
+// they are attached to an already-qualified episode (defence in depth).
+const EPISODIC_STRUCTURED_VECTOR_QUERY = `${PROJECT_PROOF}
+MATCH (ep:Episodic)-[r:REFERENCES]->(target)
+WHERE (ep.tenant_id = $tenantId OR (ep.tenant_id IS NULL AND $tenantId = $defaultTenant))
+  AND (ep.scope = $projectScope OR $projectScope IN coalesce(ep.tags, []))
+  AND coalesce(ep.archived, false) = false
+  AND ep.embedding IS NOT NULL
+  AND coalesce(ep.content, '') <> ''
+  AND (($asOf IS NULL AND r.invalid_at IS NULL)
+    OR ($asOf IS NOT NULL AND coalesce(r.valid_at, '1970-01-01T00:00:00.000Z') <= $asOf
+      AND (r.invalid_at IS NULL OR r.invalid_at > $asOf)))
+WITH DISTINCT root, target, ep, vector.similarity.cosine(ep.embedding, $queryVector) AS originalScore
+OPTIONAL MATCH (ep)-[:HAS_INDEX_KEY]->(key:EpisodicIndexKey)
+WHERE key.tenant_id = $tenantId
+  AND key.project_scope = $projectScope
+  AND key.schema_version = 1
+  AND key.embedding IS NOT NULL
+WITH root, target, ep, originalScore,
+     max(vector.similarity.cosine(key.embedding, $queryVector)) AS keyScore
+WITH root, target, ep,
+     CASE WHEN keyScore IS NULL OR originalScore >= keyScore THEN originalScore ELSE keyScore END AS score
 WHERE score IS NOT NULL
 WITH root, target, ep.id AS evidenceId,
      coalesce(ep.memory_type, 'Episodic') AS title,
@@ -502,7 +535,11 @@ export class RuntimeCandidateChannelService {
             } else {
               session = this.driver.session({ defaultAccessMode: 'READ' });
               tx = session.beginTransaction({ timeout: QUERY_TIMEOUT_MS });
-              const raw = await bounded(tx.run(spec!.query, {
+              const sourceQuery = channel === 'memory.episodic-vector'
+                && process.env[EPISODIC_STRUCTURED_INDEX_FLAG] === '1'
+                ? EPISODIC_STRUCTURED_VECTOR_QUERY
+                : spec!.query;
+              const raw = await bounded(tx.run(sourceQuery, {
                 tenantId: state.tenantId,
                 defaultTenant: DEFAULT_TENANT,
                 projectScope: state.projectScope,

@@ -12,7 +12,7 @@ Persistent memory for AI agents. Progressive disclosure: 8 always-visible tools 
 1. Load before working — `berry_context` or `berry_load`
 2. Store after deciding — `berry_store`
 3. Scope with project tags — `project:<name>`
-4. Link to entities — include entity names in stores
+4. Link to entities — include verified canonical Entity IDs in stores
 5. Be silent — don't narrate, just use
 
 ## Always-Visible Tools (Tier 1)
@@ -80,6 +80,8 @@ Recalling the right memory at the right moment without flooding the context wind
 ## Autonomous Behavior
 
 Load memory at session start using Tier 1 tools only — no domain enablement needed. `berry_context`/`berry_load` automatically include the core blocks, so no separate read step is needed (use `berry_memory_read(block: "<name>")` only to re-read one specific block). Store decisions, preferences, bug fixes, and conventions automatically (`berry_store`). Update working memory during sessions (`berry_memory_insert`).
+
+When the stored content already gives you trustworthy structure, attach optional atomic `facts`, canonical `entities`, and entity-bound `aliases`. Derive them only from that content; omit guesses, secrets, conversation-only context, invented IDs, and whole-memory restatements. They are bounded additive retrieval keys and never replace the memory.
 
 Before modifying code: enable `code` or `arch` domain via `berry_tools`, then load module context. Before planning: enable `arch` domain for architecture decisions and blast radius analysis.
 

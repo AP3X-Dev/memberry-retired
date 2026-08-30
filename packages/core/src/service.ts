@@ -35,6 +35,11 @@ import type {
 import { InternalObservedRetrievalError } from './retrieval-observer.js';
 import type { AdmissionObservationV1 } from './admission.js';
 import type { AdmissionShadowAttempt, AdmissionShadowHook } from './admission-shadow.js';
+import {
+  buildEpisodeIndexKeysV1,
+  validateEpisodeStructuredIndexV1,
+  type EpisodeIndexKeyNodeV1,
+} from './structured-index.js';
 
 /**
  * Confidence for a raw episode injected into the ranked memory pool (RL-010).
@@ -122,6 +127,7 @@ export interface Neo4jLayer {
     createWithLinks?(
       node: EpisodicNode,
       links: { agentId?: string; entityIds?: string[]; modelId?: string },
+      indexKeys?: readonly EpisodeIndexKeyNodeV1[],
     ): Promise<string>;
     linkToAgent(episodicId: string, agentId: string): Promise<void>;
     linkToEntity(episodicId: string, entityId: string): Promise<void>;
@@ -798,6 +804,32 @@ export class AMPService {
       }
     }
 
+    // Structured extras cross the same untrusted ingest boundary as content.
+    // Redact their free text before validation, embedding, or persistence; IDs
+    // remain opaque identifiers and are validated/authorized separately.
+    if (this.config.redactOnIngest && (input.facts !== undefined || input.aliases !== undefined)) {
+      input = {
+        ...input,
+        ...(input.facts !== undefined ? { facts: input.facts.map(redactSecrets) } : {}),
+        ...(input.aliases !== undefined ? {
+          aliases: input.aliases.map((alias) => ({
+            entity_id: alias.entity_id,
+            values: alias.values.map(redactSecrets),
+          })),
+        } : {}),
+      };
+    }
+
+    // MCP has a closed Zod schema, but AMPService also has direct callers. Keep
+    // the authoritative validation here and snapshot before any asynchronous
+    // operation can observe caller mutation.
+    const structuredIndex = validateEpisodeStructuredIndexV1({
+      facts: input.facts,
+      aliases: input.aliases,
+      entities: input.entities,
+      scope: input.scope,
+    });
+
     // Resolve the tenant before target validation so existence checks and graph
     // links cannot cross a logical tenant boundary.
     const tenantId = (input.tenantId && input.tenantId.trim()) || DEFAULT_TENANT;
@@ -878,6 +910,20 @@ export class AMPService {
       ...(scope !== undefined && { scope }),
       ...(tags !== undefined && { tags }),
     };
+    const indexKeys = structuredIndex
+      ? buildEpisodeIndexKeysV1({
+        episodeId: id,
+        structured: structuredIndex,
+        embeddings: await this.embedding.embedBatch([
+          ...structuredIndex.facts,
+          ...structuredIndex.aliases.flatMap(({ values }) => values),
+        ]),
+        source: 'agent',
+        tenantId,
+        projectScope: scope!,
+        createdAt: node.created_at,
+      })
+      : undefined;
     // 4. Persist the episode + its structural graph edges (agent / entities /
     // model). OPT-53: when the layer supports it, do this in ONE atomic tx
     // (createWithLinks) so a mid-failure can't leave a partially-linked episode
@@ -886,6 +932,9 @@ export class AMPService {
     // duplicate). Fall back to create()+concurrent links for layers/mocks without
     // it (behavior preserved). Signals stay a separate step (5) — they carry
     // Redis side-effects that can't join the Neo4j transaction.
+    if (structuredIndex && !this.neo4j.episodic.createWithLinks) {
+      throw new Error('structured_index:atomic_store_unavailable');
+    }
     if (this.neo4j.episodic.createWithLinks) {
       const links = {
         agentId: input.agent_id,
@@ -894,7 +943,7 @@ export class AMPService {
       };
       successfulHasEntities = (links.entityIds?.length ?? 0) > 0;
       successfulHasModel = links.modelId !== undefined;
-      await this.neo4j.episodic.createWithLinks(node, links);
+      await this.neo4j.episodic.createWithLinks(node, links, indexKeys);
     } else {
       await this.neo4j.episodic.create(node);
       const linkPromises: Promise<unknown>[] = [

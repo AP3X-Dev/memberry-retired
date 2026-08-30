@@ -18,7 +18,9 @@ Nine domains:
 
 ## Exact schemas that commonly drift
 
-`berry_store.entities` accepts canonical Entity IDs. Store both `scope: "project:<tag>"` and `tags` containing the project tag plus reusable non-project tags. `memory_type` is one of `decision`, `pattern`, `convention`, `architecture`, `preference`, `fact`, or `general`. Outcomes are `approved`, `revised`, `rejected`, or `abandoned`. An approved explicit decision promotes automatically; patterns/conventions require recurrent independent evidence. Signal types are `reinforcement`, `correction`, or `contradiction`; `target_id` must be an existing Semantic ID.
+`berry_store.entities` accepts at most 32 canonical Entity IDs. Store both `scope: "project:<tag>"` and `tags` containing the project tag plus reusable non-project tags. Optional `facts` accepts at most 32 atomic strings. Optional `aliases` accepts at most 32 closed objects shaped as `{ "entity_id": "canonical-id", "values": ["surface form"] }`, with at most 16 values each; every alias Entity ID must also appear in `entities`. Structured fields require canonical project scope, are validated and persisted only as additive derived retrieval keys, and never replace original content. `memory_type` is one of `decision`, `pattern`, `convention`, `architecture`, `preference`, `fact`, or `general`. Outcomes are `approved`, `revised`, `rejected`, or `abandoned`. An approved explicit decision promotes automatically; patterns/conventions require recurrent independent evidence. Signal types are `reinforcement`, `correction`, or `contradiction`; `target_id` must be an existing Semantic ID.
+
+Attach `facts`, `entities`, and `aliases` only when they are verifiable from the content being stored. Prefer omission to guessing; never invent canonical IDs, copy secrets, use conversation-only context, or submit the whole memory as one fact. The local-model backfill covers missing Phase A facts later.
 
 Consolidation:
 

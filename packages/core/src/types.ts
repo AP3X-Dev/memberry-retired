@@ -138,6 +138,10 @@ export interface EpisodeInput {
   memory_type?: MemoryType;
   signals?: Signal[];
   entities?: string[];
+  /** IDX-001A additive retrieval keys; original episode content is never rewritten. */
+  facts?: string[];
+  /** Entity-bound surface forms. Each entity_id must also appear in entities. */
+  aliases?: Array<{ entity_id: string; values: string[] }>;
   model_id?: string;
   scope?: string;
   tags?: string[];

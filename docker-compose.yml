@@ -96,6 +96,9 @@ services:
       # RET-Q-005 experiment: preserve one tail candidate only for an exact
       # query identifier absent from the episodic channel head. Unset = inert.
       MEMBERRY_EPISODIC_IDENTIFIER_RESERVE_V1: "${MEMBERRY_EPISODIC_IDENTIFIER_RESERVE_V1:-}"
+      # IDX-001A: score tenant/project-authorized episodic derived keys. The
+      # writer may persist keys while this remains off; unset = old query bytes.
+      MEMBERRY_EPISODIC_STRUCTURED_INDEX_V1: "${MEMBERRY_EPISODIC_STRUCTURED_INDEX_V1:-}"
       # Default-off MEM-001 observation only; no admission/routing behavior.
       MEMBERRY_ADMISSION_SHADOW_ENABLED: ${MEMBERRY_ADMISSION_SHADOW_ENABLED:-false}
       MEMBERRY_ADMISSION_SHADOW_TIMEOUT_MS: ${MEMBERRY_ADMISSION_SHADOW_TIMEOUT_MS:-50}

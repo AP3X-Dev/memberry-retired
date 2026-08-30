@@ -21,6 +21,7 @@ Resolve conflicts in this order: current user instruction, current runtime/repos
 - Before unfamiliar code changes, use `$memberry-coding`; inspect repository truth even when memory is confident.
 - Store only durable decisions, user corrections/preferences, root causes, conventions, architecture constraints, verified facts, and concise handoffs. Do not store secrets, routine edits, raw code, or git-derivable facts.
 - Every store must include the exact project scope, the project tag plus stable non-project tags, an appropriate `memory_type`, and canonical Entity IDs when known. Final decisions use `memory_type: "decision"` with `outcome: "approved"`.
+- Attach optional `facts`, `entities`, and entity-bound `aliases` already derived from the stored content. Facts must be atomic and independently true; IDs must be canonical and aliases must bind to an ID included in `entities`. Omit uncertainty, secrets, conversation-only context, and whole-memory restatements.
 - Verify the returned episode ID. Search for an existing Semantic before storing confirmation/correction; target that Semantic ID with a signal instead of creating avoidable duplicate knowledge.
 - Record `berry_feedback` when a retrieved result materially helped or misled the work.
 

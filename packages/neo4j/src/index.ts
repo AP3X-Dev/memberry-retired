@@ -32,6 +32,8 @@ export type {
   EvidenceAuthorityLedgerPersistenceV1,
 } from './evidence-authority-ledger.js';
 export { EpisodicStore } from './episodic.js';
+export { EpisodicIndexStore } from './episodic-index.js';
+export type { EpisodicIndexCursorV1, EpisodicIndexBackfillEpisodeV1 } from './episodic-index.js';
 export { AdmissionObservationStore, AdmissionObservationStoreError } from './admission-observation.js';
 export type {
   AdmissionObservationScopeV1,

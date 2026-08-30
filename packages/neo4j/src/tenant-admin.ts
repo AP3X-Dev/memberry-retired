@@ -87,6 +87,13 @@ export class TenantAdmin {
          CALL { WITH r DETACH DELETE r } IN TRANSACTIONS OF 1000 ROWS`,
         { tenant },
       );
+      // IDX-001A keys are derived sidecars, not another exported memory class.
+      // Delete them before their source Episodic nodes during tenant erasure.
+      await session.run(
+        `MATCH (k:EpisodicIndexKey {tenant_id: $tenant})
+         CALL { WITH k DETACH DELETE k } IN TRANSACTIONS OF 1000 ROWS`,
+        { tenant },
+      );
       for (const label of TENANT_LABELS) {
         // Batch to avoid a huge single transaction on large tenants.
         await session.run(
