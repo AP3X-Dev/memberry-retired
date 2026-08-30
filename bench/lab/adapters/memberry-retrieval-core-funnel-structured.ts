@@ -56,7 +56,9 @@ export class MemBerryRetrievalCoreFunnelStructuredAdapter extends InMemoryAdapte
       if (rank >= 5 || output.length >= request.limit) continue;
       const seed = byId.get(result.id);
       if (!seed) continue;
-      const bridges = mentions(seed.content).filter((entity) => !queryEntities.has(entity));
+      const seedEntities = mentions(seed.content);
+      if (!seedEntities.some((entity) => queryEntities.has(entity))) continue;
+      const bridges = seedEntities.filter((entity) => !queryEntities.has(entity));
       const candidates = bridges.flatMap((bridge) => entityToMemories.get(bridge) ?? [])
         .filter((memory) => memory.id !== seed.id && !baselineIds.has(memory.id) && !inserted.has(memory.id))
         .sort((left, right) => (lexical.get(right.id)! - lexical.get(left.id)!)
