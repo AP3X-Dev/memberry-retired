@@ -5,6 +5,7 @@ import { EMBEDDING_DIM } from '@memberry/core';
 import { canonicalTraceJson, replayRetrievalTrace, RETRIEVAL_TRACE_CHANNEL_ORDER } from '../trace.js';
 import { resolveRuntimeQueryPlannerAuthorityV1 } from '../runtime-query-planner.js';
 import {
+  EPISODIC_STRUCTURED_INDEX_FLAG,
   RuntimeCandidateChannelService,
   type RuntimeCandidateDriver,
 } from '../runtime-candidate-channel.js';
@@ -192,6 +193,50 @@ describe('RET-003B runtime candidate channel service', () => {
     expect(new Set(tight.context.sections.map((section) => section.source_type)))
       .toEqual(new Set(['semantic', 'episodic', 'fact', 'block']));
     expect(tight.context.token_count).toBeLessThanOrEqual(21);
+  });
+
+  it('keeps the legacy episodic query byte path when structured indexing is disabled', async () => {
+    const previous = process.env[EPISODIC_STRUCTURED_INDEX_FLAG];
+    delete process.env[EPISODIC_STRUCTURED_INDEX_FLAG];
+    try {
+      const mock = driver(validRows());
+      const queryVector = new Array(EMBEDDING_DIM).fill(0);
+      await new RuntimeCandidateChannelService(mock.driver).execute(
+        await authorityReceipt(),
+        { includeArchitecture: false, includeMemory: true, queryVector },
+      );
+      const query = mock.calls.find(([text]) => text.includes('MATCH (ep:Episodic)'))?.[0];
+      expect(query).toContain('MATCH (ep:Episodic)-[r:REFERENCES]->(target)');
+      expect(query).not.toContain('HAS_INDEX_KEY');
+      expect(query).not.toContain('seedRef:REFERENCES');
+    } finally {
+      if (previous === undefined) delete process.env[EPISODIC_STRUCTURED_INDEX_FLAG];
+      else process.env[EPISODIC_STRUCTURED_INDEX_FLAG] = previous;
+    }
+  });
+
+  it('bounds structured expansion to query-target seeds and rechecks neighbor scope', async () => {
+    const previous = process.env[EPISODIC_STRUCTURED_INDEX_FLAG];
+    process.env[EPISODIC_STRUCTURED_INDEX_FLAG] = '1';
+    try {
+      const mock = driver(validRows());
+      const queryVector = new Array(EMBEDDING_DIM).fill(0);
+      await new RuntimeCandidateChannelService(mock.driver).execute(
+        await authorityReceipt(),
+        { includeArchitecture: false, includeMemory: true, queryVector },
+      );
+      const query = mock.calls.find(([text]) => text.includes('MATCH (ep:Episodic)'))?.[0];
+      expect(query).toContain('MATCH (ep:Episodic)-[r:REFERENCES]->(target)');
+      expect(query).toContain('WHERE baseIndex < 5');
+      expect(query).toContain('bridge <> target');
+      expect(query).toContain('neighbor.tenant_id = $tenantId');
+      expect(query).toContain('neighbor.scope = $projectScope');
+      expect(query).toContain('neighborKey.project_scope = $projectScope');
+      expect(query).toContain('LIMIT 1');
+    } finally {
+      if (previous === undefined) delete process.env[EPISODIC_STRUCTURED_INDEX_FLAG];
+      else process.env[EPISODIC_STRUCTURED_INDEX_FLAG] = previous;
+    }
   });
 
   it('lexically reranks only the already-authorized active fact set before fusion', async () => {

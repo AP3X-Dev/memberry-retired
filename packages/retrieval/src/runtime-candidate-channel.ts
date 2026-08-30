@@ -188,11 +188,12 @@ WITH root, target, ep.id AS evidenceId,
      score
 ${COMMON_RETURN}`;
 
-// IDX-001A: same authority proof, temporal filter, evidence identity, content,
-// and channel as EPISODIC_VECTOR_QUERY. The only delta is the score: an episode
-// may be reached by its original embedding or by one of its persisted derived
-// keys. Keys are re-qualified to the authenticated tenant/project even though
-// they are attached to an already-qualified episode (defence in depth).
+// IDX-001A: preserve the authorized direct candidate set, then expand only the
+// top five episodes that reference the query-planner target. Each seed may add
+// one best-scoring active episode through a different, shared canonical Entity.
+// This is the zero-regression winner from the frozen 60-case lab gate. Derived
+// keys and expanded episodes are re-qualified to the authenticated scope even
+// though their parent/seed was already qualified (defence in depth).
 const EPISODIC_STRUCTURED_VECTOR_QUERY = `${PROJECT_PROOF}
 MATCH (ep:Episodic)-[r:REFERENCES]->(target)
 WHERE (ep.tenant_id = $tenantId OR (ep.tenant_id IS NULL AND $tenantId = $defaultTenant))
@@ -214,7 +215,54 @@ WITH root, target, ep, originalScore,
 WITH root, target, ep,
      CASE WHEN keyScore IS NULL OR originalScore >= keyScore THEN originalScore ELSE keyScore END AS score
 WHERE score IS NOT NULL
-WITH root, target, ep.id AS evidenceId,
+WITH root, target, ep, score
+ORDER BY score DESC, ep.id ASC
+WITH root, target, collect({ ep: ep, score: score })[0..$rowLimit] AS base
+UNWIND range(0, size(base) - 1) AS baseIndex
+WITH root, target, baseIndex, base[baseIndex] AS item
+CALL {
+  WITH item
+  RETURN item.ep AS candidate, item.score AS candidateScore
+  UNION ALL
+  WITH root, target, baseIndex, item
+  WHERE baseIndex < 5
+  MATCH (item.ep)-[seedRef:REFERENCES]->(bridge:Entity)<-[neighborRef:REFERENCES]-(neighbor:Episodic)
+  WHERE bridge <> target
+    AND neighbor <> item.ep
+    AND (neighbor.tenant_id = $tenantId
+      OR (neighbor.tenant_id IS NULL AND $tenantId = $defaultTenant))
+    AND (neighbor.scope = $projectScope OR $projectScope IN coalesce(neighbor.tags, []))
+    AND coalesce(neighbor.archived, false) = false
+    AND neighbor.embedding IS NOT NULL
+    AND coalesce(neighbor.content, '') <> ''
+    AND (($asOf IS NULL AND seedRef.invalid_at IS NULL AND neighborRef.invalid_at IS NULL)
+      OR ($asOf IS NOT NULL
+        AND coalesce(seedRef.valid_at, '1970-01-01T00:00:00.000Z') <= $asOf
+        AND (seedRef.invalid_at IS NULL OR seedRef.invalid_at > $asOf)
+        AND coalesce(neighborRef.valid_at, '1970-01-01T00:00:00.000Z') <= $asOf
+        AND (neighborRef.invalid_at IS NULL OR neighborRef.invalid_at > $asOf)))
+  WITH DISTINCT item, neighbor,
+       vector.similarity.cosine(neighbor.embedding, $queryVector) AS neighborOriginalScore
+  OPTIONAL MATCH (neighbor)-[:HAS_INDEX_KEY]->(neighborKey:EpisodicIndexKey)
+  WHERE neighborKey.tenant_id = $tenantId
+    AND neighborKey.project_scope = $projectScope
+    AND neighborKey.schema_version = 1
+    AND neighborKey.embedding IS NOT NULL
+  WITH item, neighbor, neighborOriginalScore,
+       max(vector.similarity.cosine(neighborKey.embedding, $queryVector)) AS neighborKeyScore
+  WITH item, neighbor,
+       CASE WHEN neighborKeyScore IS NULL OR neighborOriginalScore >= neighborKeyScore
+         THEN neighborOriginalScore ELSE neighborKeyScore END AS neighborScore
+  WHERE neighborScore IS NOT NULL
+  ORDER BY neighborScore DESC, neighbor.id ASC
+  LIMIT 1
+  RETURN neighbor AS candidate,
+       CASE WHEN neighborScore >= item.score - 0.000001
+         THEN neighborScore ELSE item.score - 0.000001 END AS candidateScore
+}
+WITH root, target, candidate, max(candidateScore) AS score
+WITH root, target, candidate.id AS evidenceId,
+     candidate AS ep,
      coalesce(ep.memory_type, 'Episodic') AS title,
      CASE WHEN coalesce(ep.task, '') = '' THEN ep.content ELSE ep.task + '\n\n' + ep.content END AS content,
      score
