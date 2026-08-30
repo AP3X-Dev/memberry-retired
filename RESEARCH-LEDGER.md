@@ -25,6 +25,40 @@ evidence that corrected it does not live only in someone's head.
 
 ## Open
 
+### RL-026 — The bounded Cerebro local-model backfill produced zero usable extractions
+**Evidence:** measured · **Status:** closed-negative for IDX-001A production activation · **Opened:** 2026-08-30
+
+IDX-001A's accepted dev arm moved the frozen multi-hop set from 28/60 to 36/60,
+but that arm assumed structured episode keys already existed. The default-off
+production pilot tested whether older memories could be supplied safely by a
+small local model. In a loopback-only Ollama container capped at two CPUs and 4
+GiB with no restart policy and a 60-second per-episode timeout,
+`qwen2.5:3b-instruct` examined 10 episodes and failed 10; the smaller
+`qwen2.5:1.5b-instruct` examined three and failed three. Both were cancelled at
+the deadline before a valid structured payload was returned.
+
+The first attempted run also exposed a separate strict-driver bug: the bounded
+batch limit reached Neo4j as `5.0`. The query failed before any extraction or
+write. PR #142 now encodes that value as a Neo4j integer and adds a regression
+assertion. Retesting the exact merged build proved the query fix, then produced
+the model timeout results above.
+
+No `EpisodicIndexKey` or `EpisodicIndexOutcome` node was written; orphan and
+tenant/project mismatch counts are all zero. The reader was never enabled. With
+the feature still off, two consecutive production probes stayed 34/34 at five
+with zero errors, p95 427.7408 ms then 291.5251 ms, and maximum response 30,402
+bytes. MCP and wiki are healthy with zero restarts; the model container is
+stopped and has no restart policy.
+
+**Revisit when:** a different offline inference budget or hardware target is
+explicitly authorized and first demonstrates a zero-failure bounded extraction
+batch with valid tenant/project provenance. Do not treat a longer timeout on the
+shared production host as a retrieval win. After extraction qualifies, the same
+>=10-point multi-hop target and positive confidence bound still apply before the
+reader may be enabled.
+
+---
+
 ### RL-025 — Broad structured-link expansion wins more cases but is not monotone
 **Evidence:** measured · **Status:** rejected arm · **Opened:** 2026-08-30
 

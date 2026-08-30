@@ -51,35 +51,45 @@ else is either design detail or a historical record.
 ## Current program position
 
 - **Last updated:** 2026-08-30
-- **Exact deployed runtime pin:** `cb85d9a96ffd084620dc9f6182eb16d80de355a3` —
-  PR #140 (RET-Q-005 episodic identifier reserve). Prior: #138 RET-Q-004
-  episodic retrieval retention; #137 RET-Q-003 diagnostics/lab reliability.
-  **The live Cerebro MCP image was built from this exact commit.** The checkout's
+- **Exact deployed runtime pin:** `c80edeb86b2b55ebd5a038ca082009b97af98a55` —
+  PR #142 (IDX-001A backfill limit correction), after PR #141 shipped the
+  default-off structured-index implementation. Prior: #140 RET-Q-005 episodic
+  identifier reserve. **The live Cerebro MCP and wiki images were built from this
+  exact commit.** The checkout's
   only untracked files remain the preserved operator files
   `docker-compose.override.yml` and `parsecheck.mjs`.
-- **Current verification ratchet:** hosted CI run `33314109447` passed Node 20,
+- **Current verification ratchet:** hosted CI runs `33319740708` (PR #141),
+  `33320341046` (merged master), and `33322940933` (PR #142) passed Node 20,
   Node 22, and the full live-container integration job, including authenticated
-  scoped retrieval and trace conformance. Clean Linux Node 20 and 22 each passed
-  896 retrieval tests (7 skipped) and 341 MCP tests (9 skipped). The repository
+  scoped retrieval and trace conformance. The focused local Neo4j package suite
+  passed 560 tests with 29 intentional live-service skips. The repository
   still has no mechanical
   total-test-count threshold; the verifier must continue checking both outcomes
   and counts rather than treating a green exit alone as the ratchet.
-- **Active critical-path lane:** IDX-001A — write-time structured indexing. The
-  memory plane is 34/34 at five; further single-hop reranker tuning is no longer
-  the measured bottleneck. G2 remains open until its parent acceptance criteria
-  are explicitly reconciled.
+- **Active critical-path lane:** IDX-001B — decide whether a different offline
+  extraction budget can make the historical backfill viable. IDX-001A shipped
+  default-off, but production qualification stopped before reader activation:
+  both bounded local models timed out every extraction. RET-007 remains blocked
+  and Phase B must not begin. G2 remains open until its parent acceptance
+  criteria are explicitly reconciled.
 - **Highest phase started:** Phase 9
 - **Closed phase gates:** G0, G1, G3
 - **Open phase gates:** G2, G4 through G9, and GF
 - **Program estimate:** approximately 35–40% complete
 - **Measured retrieval quality:** RET-Q-005 moved the live 34-case memory gate
-  from 33/34 (97.06%) to **34/34 (100%)** without regressing prior wins. Two
-  consecutive production probes were 34/34 with zero errors; p95 was 296.9344 ms
-  then 306.6444 ms and max response was 29,383 bytes.
+  from 33/34 (97.06%) to **34/34 (100%)** without regressing prior wins. After
+  the IDX-001A default-off deployment, two consecutive production probes remained
+  34/34 with zero errors; p95 was 427.7408 ms then 291.5251 ms and maximum
+  response size was 30,402 bytes.
   The earlier code-plane gains remain: Answer@5 moved 20% → 70% across
   IDX-002A/B/003/004.
-- **Deployment state:** RET-Q-005 is merged, deployed, and live-verified on Cerebro
-  at `cb85d9a`. The MCP container is healthy with zero restarts and
+- **Deployment state:** IDX-001A is merged and deployed at `c80edeb` with
+  `MEMBERRY_EPISODIC_STRUCTURED_INDEX_V1` unset. MCP and wiki are healthy with
+  zero restarts on image
+  `sha256:2a630c29e030901fb15950a28bbde89a52ac14bd1d64fba0bfa033f4b0bcde0e`.
+  The stopped/no-restart local-model container is outside query time. The live
+  graph has zero `EpisodicIndexKey` and `EpisodicIndexOutcome` nodes, zero
+  orphans, and zero scope mismatches. RET-Q-005 remains enabled through
   `MEMBERRY_EPISODIC_IDENTIFIER_RESERVE_V1=1`.
   **COD-010b deployed
   2026-08-26** (master `3eba9a9`); the served
@@ -101,33 +111,34 @@ else is either design detail or a historical record.
 
 ## NEXT ACTION
 
-### IDX-001A — Production qualification of the local winner
+### IDX-001B — Historical-backfill viability decision; reader stays off
 
-The implementation is complete on `autoresearch/idx-001a-20260830` and remains
-undeployed/default-off. The frozen 60-case dev gate moved from **28/60 (46.7%)**
-to **36/60 (60.0%)** multi-hop success@10: **+13.3 percentage points**, paired
-95% bootstrap interval **[+5.0, +23.3]**, eight improved cases and zero
-regressions. The broad first arm reached 40/60 but regressed seven prior wins;
-the accepted arm expands only query-target seeds.
+IDX-001A merged in PR #141 and its production-discovered Neo4j integer correction
+merged in PR #142. The frozen 60-case dev gate moved from **28/60 (46.7%)** to
+**36/60 (60.0%)** multi-hop success@10: **+13.3 percentage points**, paired 95%
+bootstrap interval **[+5.0, +23.3]**, eight improved cases and zero regressions.
+The default-off production release preserved 34/34 memory Answer@5 and all
+latency/response-size caps.
 
-The pre-deploy production probe initially read 33/34 at five because `om-05`
-still named RET-Q-001 as the active next-sprint source after the approved
-IDX-001A decision had superseded it. Its unchanged query already returned the
-new approved decision at rank 2. The oracle now retains both historical IDs and
-adds the superseding decision under an explicit 2026-08-30 audit field; no query,
-ranking code, threshold, or prior acceptable evidence was removed.
+Production qualification then stopped at the pre-registered pilot gate. Under a
+2-core, 4-GiB, loopback-only, no-restart Ollama container, `qwen2.5:3b-instruct`
+examined 10 episodes and timed out all 10; `qwen2.5:1.5b-instruct` examined three
+and timed out all three. Both used a 60-second per-episode limit. Neither wrote a
+key or outcome. The reader was never enabled, and the model container is stopped.
 
-1. Review and merge the default-off candidate without changing the accepted
-   retrieval rule or frozen instrument.
-2. Deploy with `MEMBERRY_EPISODIC_STRUCTURED_INDEX_V1` off; prove the existing
-   34-case memory gate remains 34/34 and the response/latency caps hold.
-3. Run a bounded local-model backfill pilot for `project:memberry`, record status,
-   then enable the reader and repeat two production probes.
-4. Keep only if production p95 is <=500 ms, responses are <=32 KiB, leakage and
-   provenance checks stay clean, and the gain survives. Roll back by disabling
-   the reader and deleting only scoped `EpisodicIndexKey` nodes.
-5. Resume RET-007 only after this qualification closes; do not broaden Phase B
-   if the production result does not confirm the local evidence.
+1. Do not enable `MEMBERRY_EPISODIC_STRUCTURED_INDEX_V1`, resume RET-007, or
+   start Phase B from the dev-only gain.
+2. Treat a new backfill attempt as IDX-001B with a newly authorized resource or
+   hardware budget. Pre-register extraction throughput and validity before any
+   retrieval measurement; merely lengthening production-host timeouts is not a
+   qualification result.
+3. A retry must first produce a zero-failure bounded batch with clean
+   tenant/project provenance, then demonstrate the original >=10-point multi-hop
+   gain with a positive confidence bound while the 34-case production gate stays
+   34/34, p95 <=500 ms, and responses <=32 KiB.
+4. If no bounded extractor qualifies, close IDX-001 as a negative production
+   result and move to the separately authorized G2 decision. Do not broaden
+   Phase B.
 
 ### Historical measurement-first direction (superseded by RET-Q-005)
 
@@ -601,9 +612,12 @@ freeze G3, G6, or G8 indefinitely.
   identity) needs a NEW graph-carrying instrument version — lab scenarios carry
   no entity fields today, so budget that apparatus cost before Phase B, not
   after. Ships with the D-DOCS agent-guidance deliverable in the same change as
-  the schema. `(IDX-001A implemented locally on autoresearch/idx-001a-20260830;
-  frozen dev 28/60 -> 36/60 success@10, +13.3pp, paired 95% CI [+5.0,+23.3],
-  8 improved/0 regressed. Pending merge and default-off production qualification.)`
+  the schema. `(IDX-001A merged in PR #141; backfill-limit fix PR #142. Frozen
+  dev 28/60 -> 36/60 success@10, +13.3pp, paired 95% CI [+5.0,+23.3], 8
+  improved/0 regressed. Deployed default-off at c80edeb. Production backfill
+  qualification stopped: 3B failed 10/10 and 1.5B failed 3/3 at the bounded
+  timeout, zero derived nodes written, reader never enabled. Parent remains open
+  pending IDX-001B viability or terminal closure.)`
 - [ ] RETURN POINT: RET-007 multi-hop — resume AFTER IDX-001, not before.
   Measured 2026-08-25 (advisor log Findings 3 and 4): the query-time mechanism
   now recovers the withheld second hop in 13 of 14 calib scenarios, up from 0,
