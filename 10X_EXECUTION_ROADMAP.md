@@ -51,41 +51,36 @@ else is either design detail or a historical record.
 ## Current program position
 
 - **Last updated:** 2026-08-30
-- **Exact deployed runtime pin:** `1c0f97c16a9fec9561bc793589d1727d80d0c93d` —
-  PR #138 (RET-Q-004 episodic retrieval retention). Prior: #137 RET-Q-003
-  diagnostics/lab reliability; #136/#135/#134 RET-Q-002 memory-quality work.
+- **Exact deployed runtime pin:** `cb85d9a96ffd084620dc9f6182eb16d80de355a3` —
+  PR #140 (RET-Q-005 episodic identifier reserve). Prior: #138 RET-Q-004
+  episodic retrieval retention; #137 RET-Q-003 diagnostics/lab reliability.
   **The live Cerebro MCP image was built from this exact commit.** The checkout's
   only untracked files remain the preserved operator files
   `docker-compose.override.yml` and `parsecheck.mjs`.
-- **Current verification ratchet:** hosted CI run `33307134353` passed Node 20,
+- **Current verification ratchet:** hosted CI run `33314109447` passed Node 20,
   Node 22, and the full live-container integration job, including authenticated
   scoped retrieval and trace conformance. Clean Linux Node 20 and 22 each passed
   896 retrieval tests (7 skipped) and 341 MCP tests (9 skipped). The repository
   still has no mechanical
   total-test-count threshold; the verifier must continue checking both outcomes
   and counts rather than treating a green exit alone as the ratchet.
-- **Active critical-path phase:** Phase 2 — Retrieval 2.0. The memory plane is now
-  33/34 at five; the only remaining failure is one episodic item outside the
-  bounded candidate window. RET-Q-005 is the active packet; G2 remains open.
+- **Active critical-path lane:** IDX-001A — write-time structured indexing. The
+  memory plane is 34/34 at five; further single-hop reranker tuning is no longer
+  the measured bottleneck. G2 remains open until its parent acceptance criteria
+  are explicitly reconciled.
 - **Highest phase started:** Phase 9
 - **Closed phase gates:** G0, G1, G3
 - **Open phase gates:** G2, G4 through G9, and GF
 - **Program estimate:** approximately 35–40% complete
-- **Measured retrieval quality:** RET-Q-004 moved the live 34-case memory gate
-  from 31/34 (91.18%) to **33/34 (97.06%)**, a 5.88-point absolute gain and 66.7%
-  reduction in misses, with zero regression of the 31 prior wins. `rq-e-05` moved
-  from rank 12 to rank 1 and `rq-e-06` from missing to rank 4. Semantic, Fact, and
-  MemoryBlock remain 100% at five; Episodic is now 16/17 (94.12%). The sole miss,
-  `rq-e-07`, is vector rank 53 and therefore never enters the bounded 50-candidate
-  rerank window. Two consecutive production runs were identical at 33/34 with
-  zero errors; p95 was 265 ms then 279 ms and max response was 29,357 bytes.
+- **Measured retrieval quality:** RET-Q-005 moved the live 34-case memory gate
+  from 33/34 (97.06%) to **34/34 (100%)** without regressing prior wins. Two
+  consecutive production probes were 34/34 with zero errors; p95 was 296.9344 ms
+  then 306.6444 ms and max response was 29,383 bytes.
   The earlier code-plane gains remain: Answer@5 moved 20% → 70% across
   IDX-002A/B/003/004.
-- **Deployment state:** RET-Q-004 is merged, deployed, and live-verified on Cerebro
-  at `1c0f97c`. The MCP container is healthy with zero restarts and
-  `MEMBERRY_EPISODIC_RECALL_V1=1`; the prior image is retained as
-  `memberry:rollback-retq004-8cf1f65`. Rollback is unset the flag, retag the
-  retained image if needed, and recreate only MCP; no graph rollback is required.
+- **Deployment state:** RET-Q-005 is merged, deployed, and live-verified on Cerebro
+  at `cb85d9a`. The MCP container is healthy with zero restarts and
+  `MEMBERRY_EPISODIC_IDENTIFIER_RESERVE_V1=1`.
   **COD-010b deployed
   2026-08-26** (master `3eba9a9`); the served
   code plane is live and verified at `**Code:** served (16 of 20)` on a mixed
@@ -106,33 +101,23 @@ else is either design detail or a historical record.
 
 ## NEXT ACTION
 
-### RET-Q-005 — Recover the final out-of-window episodic candidate
+### IDX-001A — Write-time structured indexing
 
-RET-Q-004 closed two of the three episodic misses without regressing any prior
-win. Do not redesign the instrument or broaden the served-reranker exception.
-Resume from the exact live baseline at `1c0f97c`:
+Persist optional, validated atomic facts, canonical entity references, and
+entity-bound aliases when an episode is stored. Treat them as additive derived
+retrieval keys: original episode bytes remain unchanged, query time stays
+model-free, and one default-off flag makes the reader inert.
 
-| plane | Answer@5 | remaining failure |
-|---|---:|---|
-| Semantic | 7/7 | none |
-| Fact | 5/5 | none |
-| MemoryBlock | 5/5 | none |
-| Episodic | 16/17 | `rq-e-07` missing; expected item is vector rank 53 |
-| **All memory** | **33/34 (97.06%)** | **one candidate-window miss** |
-
-Execute one bounded candidate-reachability packet:
-
-1. Freeze `rq-e-07` candidate-channel evidence showing the expected item at
-   vector rank 53 and absent from the current 50-row served window.
-2. Measure the smallest bounded episodic oversampling/window change that admits
-   the item. Do not key behavior to an evidence id, title, or benchmark question.
-3. Keep the change default-off and authority-bound. Preserve tenant/project
-   isolation, provenance, temporal filtering, reranker ordering, and all 33
-   current top-five wins.
-4. Accept only at 34/34, with zero errors/regressions, p95 <=500 ms, max response
-   <=32 KiB, and no material candidate/latency growth outside episodic retrieval.
-5. Require Node 20/22, full lab, live-container integration, exact-branch CI, and
-   live Cerebro rollback proof before closing the packet.
+1. Require closed bounded inputs and exact tenant/project authorization for every
+   referenced entity; reject malformed structure before any episode is written.
+2. Persist derived keys atomically with their source episode and provenance.
+3. Provide a resumable, idempotent, resource-capped local-model backfill and a
+   rollback that deletes only derived keys.
+4. Accept only if the frozen 60-case multi-hop dev set improves by at least 10
+   percentage points with a positive confidence bound, while the 34-case memory
+   gate remains 34/34, p95 stays <=500 ms, and responses stay <=32 KiB.
+5. Stop after Phase A if the measured multi-hop gain is not meaningful; do not
+   proceed into a larger graph-instrument expansion without evidence.
 
 ### Historical measurement-first direction (superseded by RET-Q-005)
 
@@ -557,9 +542,8 @@ freeze G3, G6, or G8 indefinitely.
 - [x] RET-Q-004 — Episodic miss repair `(PR #138, commit 1c0f97c; live Answer@5
   31/34 → 33/34 with rq-e-05 at rank 1 and rq-e-06 at rank 4, no prior-win
   regressions, zero errors, bounded latency/response size, and rollback retained.)`
-- [ ] RET-Q-005 — Final episodic candidate reachability `(active NEXT ACTION:
-  admit rq-e-07 from vector rank 53 into a bounded served window and reach 34/34
-  without weakening isolation, provenance, latency, or response limits.)`
+- [x] RET-Q-005 — Final episodic candidate reachability `(PR #140, cb85d9a;
+  live Answer@5 34/34 with two consecutive zero-error probes.)`
 - [ ] G2 — Retrieval holdout quality and safety gate
 
 ## Phase 3 — Admission and lifecycle intelligence
