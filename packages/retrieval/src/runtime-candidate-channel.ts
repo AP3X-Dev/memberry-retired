@@ -225,6 +225,7 @@ CALL {
   RETURN item.ep AS candidate, item.score AS candidateScore
   UNION ALL
   WITH root, target, baseIndex, item
+  WITH root, target, baseIndex, item
   WHERE baseIndex < 5
   MATCH (item.ep)-[seedRef:REFERENCES]->(bridge:Entity)<-[neighborRef:REFERENCES]-(neighbor:Episodic)
   WHERE bridge <> target
