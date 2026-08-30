@@ -98,6 +98,16 @@ describe('bootstrap.ts regression', () => {
     expect(BOOTSTRAP_SOURCE.match(/createServedRerankerProviderV1\(\)/g)).toHaveLength(1);
     expect(BOOTSTRAP_SOURCE).toMatch(/new UnifiedAssembler\([\s\S]*?embedding,\s*llm,\s*servedReranker,\s*\)/);
   });
+  it('RET-Q-004 keeps the episodic recall guard exact-value default-off and MCP-only', () => {
+    expect(BOOTSTRAP_SOURCE).toContain("const episodicRecallEnabled = process.env['MEMBERRY_EPISODIC_RECALL_V1'] === '1'");
+    expect(BOOTSTRAP_SOURCE).toContain('if (episodicRecallEnabled) unifiedAssembler.enableEpisodicRecallV1()');
+    const mcpService = COMPOSE_SOURCE.split('\n  mcp:')[1]?.split('\n  wiki:')[0];
+    const wikiService = COMPOSE_SOURCE.split('\n  wiki:')[1]?.split('\nvolumes:')[0];
+    const exactEntry = 'MEMBERRY_EPISODIC_RECALL_V1: "${MEMBERRY_EPISODIC_RECALL_V1:-}"';
+    expect(mcpService).toContain(exactEntry);
+    expect(COMPOSE_SOURCE.split(exactEntry)).toHaveLength(2);
+    expect(wikiService).not.toContain('MEMBERRY_EPISODIC_RECALL_V1');
+  });
   it('RET-010D requires both authority switches for shadow and served before core effects', () => {
     expect(BOOTSTRAP_SOURCE).toContain("const queryPlannerEnabled = process.env['MEMBERRY_QUERY_PLANNER_V1'] === '1'");
     expect(BOOTSTRAP_SOURCE).toContain("const candidateChannelEnabled = process.env['MEMBERRY_CANDIDATE_CHANNEL_V1'] === '1'");

@@ -14,7 +14,11 @@ import {
   SERVED_RERANKER_PROVIDER_IDENTITY,
   type ServedRerankerConstructionV1,
 } from '../served-reranker.js';
-import { createRerankerProviderV1, parseSerializedRerankerProviderRequestV1 } from '../reranker.js';
+import {
+  createRerankerProviderV1,
+  parseSerializedRerankerProviderRequestV1,
+  serializeRerankerProviderResponseV1,
+} from '../reranker.js';
 
 const project = 'project:memberry';
 const entityId = 'entity-memberry';
@@ -671,6 +675,86 @@ describe('RET-003B runtime candidate channel service', () => {
     expect(fallback.context.sections).toEqual(sync.context.sections);
     expect(fallback.trace!.algorithmVersion).toBe('ranked-v2');
     expect(fallback.trace!.events).toContainEqual(expect.objectContaining({ kind: 'reranker-stage', outcome: 'baseline' }));
+  });
+
+  it('RET-Q-004 preserves a reranked top-five episode through density packing only when enabled', async () => {
+    const rows = validRows();
+    rows.scope = [];
+    rows.fact = [];
+    rows.block = [];
+    const names = ['head', 'target', 'a', 'b', 'c', ...Array.from({ length: 8 }, (_, index) => `low-${index}`)];
+    rows.episodicVector = names.map((name, index) => record(
+      ['tenantId', 'projectScope', 'resolvedEntityId', 'evidenceId', 'title', 'content', 'score'],
+      [
+        'tenant-a', project, entityId, `episode-${name}`, 'Episodic',
+        `${name} ${name === 'target' ? 't'.repeat(160) : name.startsWith('low-') ? 'tiny' : 'x'.repeat(20)}`,
+        0.99 - index * 0.01,
+      ],
+    ));
+    const queryVector = new Array(EMBEDDING_DIM).fill(0);
+    queryVector[0] = 1;
+    const execution = await new RuntimeCandidateChannelService(driver(rows).driver).execute(
+      await authorityReceipt(), { includeArchitecture: false, includeMemory: true, queryVector },
+    );
+    const rerankScores = new Map([
+      ['head', 1], ['a', 0.9], ['b', 0.8], ['c', 0.7], ['target', 0.6],
+      ...Array.from({ length: 8 }, (_, index) => [
+        `low-${index}`, Number((0.59 - index * 0.01).toFixed(2)),
+      ] as const),
+    ]);
+    const provider = createRerankerProviderV1(
+      SERVED_RERANKER_PROVIDER_IDENTITY,
+      async (serialized) => {
+        const request = parseSerializedRerankerProviderRequestV1(serialized);
+        return serializeRerankerProviderResponseV1(
+          request,
+          SERVED_RERANKER_PROVIDER_IDENTITY,
+          request.candidates.map((candidate) => rerankScores.get(candidate.content.split(' ', 1)[0]!) ?? 0),
+        );
+      },
+    ) as ServedRerankerConstructionV1;
+
+    const ordinaryAssembler = candidateAssembler(provider);
+    const guardedAssembler = candidateAssembler(provider);
+    guardedAssembler.enableEpisodicRecallV1();
+    const ordinary = await ordinaryAssembler.assembleCandidateExecutionServed(
+      'target', execution, 70, false, true, true,
+    );
+    const guarded = await guardedAssembler.assembleCandidateExecutionServed(
+      'target', execution, 70, false, true, true,
+    );
+    const ordinaryIds = ordinary.context.sections.flatMap((section) => section.items.map((item) => item.id));
+    const guardedIds = guarded.context.sections.flatMap((section) => section.items.map((item) => item.id));
+
+    expect(ordinaryIds).not.toContain('episode-target');
+    expect(guardedIds[0]).toBe('episode-head');
+    expect(guardedIds.indexOf('episode-target')).toBeGreaterThanOrEqual(0);
+    expect(guardedIds.indexOf('episode-target')).toBeLessThan(5);
+    expect(guarded.context.token_count).toBeLessThanOrEqual(70);
+    expect(replayRetrievalTrace(guarded.trace!).resultOrder).toEqual(guarded.trace!.resultOrder);
+
+    const typedRows = validRows();
+    typedRows.scope = [];
+    typedRows.fact = [];
+    typedRows.block = [];
+    typedRows.episodicVector = names.map((name, index) => record(
+      ['tenantId', 'projectScope', 'resolvedEntityId', 'evidenceId', 'title', 'content', 'score'],
+      [
+        'tenant-a', project, entityId, `episode-${name}`, 'decision',
+        `${name} ${name === 'target' ? 't'.repeat(160) : name.startsWith('low-') ? 'tiny' : 'x'.repeat(20)}`,
+        0.99 - index * 0.01,
+      ],
+    ));
+    const typedExecution = await new RuntimeCandidateChannelService(driver(typedRows).driver).execute(
+      await authorityReceipt(), { includeArchitecture: false, includeMemory: true, queryVector },
+    );
+    const typedAssembler = candidateAssembler(provider);
+    typedAssembler.enableEpisodicRecallV1();
+    const typed = await typedAssembler.assembleCandidateExecutionServed(
+      'target', typedExecution, 70, false, true, true,
+    );
+    expect(typed.context.sections.flatMap((section) => section.items.map((item) => item.id)))
+      .toEqual(ordinaryIds);
   });
 
   it('keeps parallel served candidate executions receipt-local', async () => {

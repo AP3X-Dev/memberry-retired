@@ -96,6 +96,57 @@ describe('RET-010B frozen served reranker', () => {
     expect(ids(alpha)).not.toEqual(ids(omega));
   });
 
+  it('RET-Q-004 pins an architecture vector head without discarding the remaining reranked order', async () => {
+    const episode = { ...result('episode-head', 1, 'architecture'), source_type: 'episodic' as const };
+    const baseline = [
+      episode,
+      ...Array.from({ length: 12 }, (_, index) => result(`lexical-${index}`, 0.5, `match ${index}`)),
+    ];
+    const provider = exactProvider([0.1, 1, 0.95, 0.9, 0.85, 0.8, 0.75, 0.7, 0.65, 0.6, 0.55, 0.5, 0.45]);
+
+    const ordinary = await applyServedRerankerV1('match', baseline, provider);
+    const guarded = await applyServedRerankerV1('match', baseline, provider, {
+      preserveBaselineEpisodicHead: true,
+    });
+
+    expect(ordinary.outcome).toBe('reranked');
+    expect(ids(ordinary).indexOf('episode-head')).toBe(12);
+    expect(guarded.outcome).toBe('reranked');
+    expect(ids(guarded)).toEqual([
+      'episode-head', ...Array.from({ length: 12 }, (_, index) => `lexical-${index}`),
+    ]);
+    if (guarded.outcome !== 'reranked') throw new Error('expected reranked outcome');
+    expect(guarded.candidates.map((candidate) => candidate.result.id)).toEqual(ids(guarded));
+  });
+
+  it('RET-Q-004 leaves an architecture head inside the reranked top ten under lexical control', async () => {
+    const baseline = [
+      { ...result('episode-head', 1, 'architecture'), source_type: 'episodic' as const },
+      ...Array.from({ length: 9 }, (_, index) => result(`lexical-${index}`, 0.5, `match ${index}`)),
+    ];
+    const guarded = await applyServedRerankerV1(
+      'match', baseline, exactProvider([0.1, 1, 0.9, 0.8, 0.7, 0.6, 0.5, 0.4, 0.3, 0.2]),
+      { preserveBaselineEpisodicHead: true },
+    );
+
+    expect(guarded.outcome).toBe('reranked');
+    expect(ids(guarded).indexOf('episode-head')).toBe(9);
+  });
+
+  it('RET-Q-004 leaves non-architecture episodic heads under ordinary lexical control', async () => {
+    const baseline = [
+      { ...result('episode-head', 1, 'decision'), source_type: 'episodic' as const },
+      ...Array.from({ length: 5 }, (_, index) => result(`lexical-${index}`, 0.5, `match ${index}`)),
+    ];
+    const guarded = await applyServedRerankerV1(
+      'match', baseline, exactProvider([0.1, 1, 0.9, 0.8, 0.7, 0.6]),
+      { preserveBaselineEpisodicHead: true },
+    );
+
+    expect(guarded.outcome).toBe('reranked');
+    expect(ids(guarded).indexOf('episode-head')).toBe(5);
+  });
+
   it('reranks mixed batches containing a MemoryBlock instead of falling back wholesale', async () => {
     const baseline = [
       result('semantic-distractor', 1, 'unrelated roadmap'),

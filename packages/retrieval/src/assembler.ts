@@ -317,6 +317,7 @@ export class UnifiedAssembler {
   private static readonly COLLECTION_SIZE_TTL_MS = 60_000; // 60s cache
   readonly servedRerankerEnabled: boolean;
   private multihop: MultihopExpansionOptionsV1 | undefined;
+  private episodicRecallV1 = false;
 
   constructor(
     private driver: Driver,
@@ -335,6 +336,12 @@ export class UnifiedAssembler {
   /** @internal RET-007 v4: turn the legacy-arm expansion on (MEMBERRY_MULTIHOP_EXPANSION_V1) or fix the lab policy. */
   enableMultihopExpansionV1(options: MultihopExpansionOptionsV1): void {
     this.multihop = { ...options };
+  }
+
+  /** @internal RET-Q-004: default-off guard for measured episodic attrition in
+   * the authority-bound served lane. */
+  enableEpisodicRecallV1(): void {
+    this.episodicRecallV1 = true;
   }
 
   /** @internal Query vector for the receipt-bound candidate runtime. The runtime snapshots and
@@ -739,9 +746,12 @@ export class UnifiedAssembler {
     const fused = rrfFusion(lists, 50, 60, undefined, undefined, undefined, traceAdapter);
     const deduped = dedup(fused);
     traceAdapter?.recordDedup(fused.map((result) => result.id), deduped.map((result) => result.id));
-    const outcome = await this.applyServedReranker(task, deduped);
+    const outcome = await this.applyServedReranker(task, deduped, this.episodicRecallV1);
     traceAdapter?.recordReranker(deduped, outcome);
-    const privateSections = groupAndBudget(outcome.results, maxTokens);
+    const privateSections = groupAndBudget(outcome.results, maxTokens, {
+      preserveUnclassifiedEpisodicTopFive:
+        this.episodicRecallV1 && outcome.outcome === 'reranked',
+    });
     traceAdapter?.recordBudget(privateSections.flatMap((section) => section.items.map((item) => item.id)));
     const sections: ContextSection[] = privateSections.map((section) => ({
       ...section,
@@ -1056,9 +1066,12 @@ export class UnifiedAssembler {
   private applyServedReranker(
     task: string,
     results: readonly RetrievalResult[],
+    preserveBaselineEpisodicHead = false,
   ): Promise<ServedRerankerApplicationResultV1> {
     if (this.servedReranker === null) throw new Error('served_reranker:unavailable');
-    return applyServedRerankerV1(task, results, this.servedReranker);
+    return applyServedRerankerV1(task, results, this.servedReranker, {
+      preserveBaselineEpisodicHead,
+    });
   }
 
   private async assembleRankedInternal(
@@ -2421,7 +2434,11 @@ function renderCodePlaneSegment(status: CodePlaneStatusV1): string {
   }
 }
 
-function groupAndBudget(results: readonly RetrievalResult[], maxTokens: number): ContextSection[] {
+function groupAndBudget(
+  results: readonly RetrievalResult[],
+  maxTokens: number,
+  options: { preserveUnclassifiedEpisodicTopFive?: boolean } = {},
+): ContextSection[] {
   const headingMap: Record<string, string> = {
     arch_entity: 'Architecture',
     symbol: 'Code',
@@ -2470,7 +2487,21 @@ function groupAndBudget(results: readonly RetrievalResult[], maxTokens: number):
   const reservedSources = new Set<string>();
   const reserved = new Set<RetrievalResult>();
   let reservedTokens = 0;
+  // RET-Q-004: legacy unclassified episodes use the literal fallback title
+  // `Episodic`. Keep an exact reranked rank-five episode when it fits; the
+  // previous density optimizer could discard that boundary answer. Other
+  // ranks, typed memories, and the baseline path retain the established packer.
+  if (options.preserveUnclassifiedEpisodicTopFive === true) {
+    for (const result of results.slice(4, 5).filter((candidate) =>
+      candidate.source_type === 'episodic' && candidate.title === 'Episodic')) {
+      const cost = itemTokens(result);
+      if (reservedTokens + cost > maxTokens) continue;
+      reserved.add(result);
+      reservedTokens += cost;
+    }
+  }
   for (const result of maxTokens >= 20 ? results : []) {
+    if (reserved.has(result)) continue;
     if (!memorySources.has(result.source_type) || reservedSources.has(result.source_type)) continue;
     reservedSources.add(result.source_type);
     const cost = itemTokens(result);

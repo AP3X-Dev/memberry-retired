@@ -450,6 +450,7 @@ export async function applyServedRerankerV1(
   query: string,
   results: readonly RetrievalResult[],
   provider: RerankerProviderV1,
+  options: { preserveBaselineEpisodicHead?: boolean } = {},
 ): Promise<ServedRerankerApplicationResultV1> {
   let snapshots: readonly SafeResult[];
   try {
@@ -509,6 +510,33 @@ export async function applyServedRerankerV1(
         result: owned,
         calibratedScore: candidate.score,
       }));
+    }
+    // RET-Q-004: the lexical provider is a refinement of the authority-bound
+    // vector/fusion baseline, not permission to erase its strongest episodic
+    // signal. A measured live failure put an approved architecture vector head
+    // at baseline rank 1 and lexical rank 13. Pin only that head ahead of the
+    // otherwise unchanged reranked order; a whole-list fallback regresses other
+    // planes that share the same query.
+    if (options.preserveBaselineEpisodicHead === true
+      && snapshots[0]?.source_type === 'episodic'
+      && snapshots[0]?.title === 'architecture') {
+      let rerankedHead = -1;
+      for (let index = 0; index < applications.length; index += 1) {
+        if (applications[index]!.baselineResult === snapshots[0]!.original) {
+          rerankedHead = index;
+          break;
+        }
+      }
+      if (rerankedHead >= 10) {
+        const pinnedResult = ownedResults[rerankedHead]!;
+        const pinnedApplication = applications[rerankedHead]!;
+        for (let index = rerankedHead; index > 0; index -= 1) {
+          defineArrayItem(ownedResults, index, ownedResults[index - 1]!);
+          defineArrayItem(applications, index, applications[index - 1]!);
+        }
+        defineArrayItem(ownedResults, 0, pinnedResult);
+        defineArrayItem(applications, 0, pinnedApplication);
+      }
     }
     return nullRecord({
       outcome: 'reranked' as const,
