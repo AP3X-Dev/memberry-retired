@@ -57,6 +57,22 @@ describe('IDX-001A structured episode index contract', () => {
     })).toThrow('too_many_keys');
   });
 
+  it('rejects sparse arrays at every structured input level', () => {
+    const sparseFacts = new Array<string>(1);
+    const sparseEntities = new Array<string>(1);
+    const sparseAliases = new Array<{ entity_id: string; values: string[] }>(1);
+    const sparseValues = new Array<string>(1);
+    expect(() => validateEpisodeStructuredIndexV1({ facts: sparseFacts, scope: 'project:memberry' }))
+      .toThrow('facts:invalid_array');
+    expect(() => validateEpisodeStructuredIndexV1({ facts: ['fact'], entities: sparseEntities, scope: 'project:memberry' }))
+      .toThrow('entities:invalid_array');
+    expect(() => validateEpisodeStructuredIndexV1({ aliases: sparseAliases, scope: 'project:memberry' }))
+      .toThrow('aliases:invalid_array');
+    expect(() => validateEpisodeStructuredIndexV1({
+      aliases: [{ entity_id: 'e1', values: sparseValues }], entities: ['e1'], scope: 'project:memberry',
+    })).toThrow('alias_values:invalid_array');
+  });
+
   it('builds deterministic provenance-bound key identities', () => {
     const structured = validateEpisodeStructuredIndexV1({
       facts: ['A uses B'], scope: 'project:memberry',

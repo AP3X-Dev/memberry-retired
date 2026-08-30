@@ -61,7 +61,7 @@ type RuntimeToolMethod = (this: McpServer, name: string, ...args: unknown[]) => 
 
 const TOOL_CAPABILITY_METADATA_V1 = Object.freeze([
   { domainId: 'memory', toolId: 'berry_load', operation: 'read', scopeRule: 'tenant-only' },
-  { domainId: 'memory', toolId: 'berry_store', operation: 'create', scopeRule: 'tenant-only' },
+  { domainId: 'memory', toolId: 'berry_store', operation: 'create', scopeRule: 'exact-scope' },
   { domainId: 'memory', toolId: 'berry_memory_read', operation: 'read', scopeRule: 'exact-scope' },
   { domainId: 'memory', toolId: 'berry_memory_insert', operation: 'update', scopeRule: 'exact-scope' },
   { domainId: 'memory', toolId: 'berry_grep', operation: 'read', scopeRule: 'tenant-only' },

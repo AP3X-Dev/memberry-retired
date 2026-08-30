@@ -5,6 +5,7 @@ import { type Driver } from 'neo4j-driver';
 const CONSTRAINTS: string[] = [
   'CREATE CONSTRAINT episodic_id IF NOT EXISTS FOR (e:Episodic) REQUIRE e.id IS UNIQUE',
   'CREATE CONSTRAINT episodic_index_key_id IF NOT EXISTS FOR (k:EpisodicIndexKey) REQUIRE k.id IS UNIQUE',
+  'CREATE CONSTRAINT episodic_index_outcome_id IF NOT EXISTS FOR (o:EpisodicIndexOutcome) REQUIRE o.id IS UNIQUE',
   'CREATE CONSTRAINT semantic_id IF NOT EXISTS FOR (s:Semantic) REQUIRE s.id IS UNIQUE',
   'CREATE CONSTRAINT procedural_id IF NOT EXISTS FOR (p:Procedural) REQUIRE p.id IS UNIQUE',
   'CREATE CONSTRAINT entity_id IF NOT EXISTS FOR (e:Entity) REQUIRE e.id IS UNIQUE',
@@ -37,6 +38,7 @@ const INDEXES: string[] = [
   'CREATE INDEX episodic_agent IF NOT EXISTS FOR (e:Episodic) ON (e.agent_id)',
   'CREATE INDEX episodic_index_key_episode IF NOT EXISTS FOR (k:EpisodicIndexKey) ON (k.episode_id)',
   'CREATE INDEX episodic_index_key_scope IF NOT EXISTS FOR (k:EpisodicIndexKey) ON (k.tenant_id, k.project_scope)',
+  'CREATE INDEX episodic_index_outcome_scope IF NOT EXISTS FOR (o:EpisodicIndexOutcome) ON (o.tenant_id, o.project_scope)',
   'CREATE INDEX entity_name IF NOT EXISTS FOR (e:Entity) ON (e.name)',
   'CREATE INDEX fact_status_valid IF NOT EXISTS FOR (f:Fact) ON (f.status, f.valid_at)',
   'CREATE INDEX fact_subject IF NOT EXISTS FOR (f:Fact) ON (f.subject)',

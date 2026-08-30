@@ -1,5 +1,5 @@
 import type { AdapterCapability, IngestRequest, IngestResult, LabMemory, QueryRequest, QueryResponse } from '../contracts/adapter.js';
-import { InMemoryAdapter, namespaceKey } from './in-memory.js';
+import { InMemoryAdapter, isCurrent, namespaceKey } from './in-memory.js';
 import { funnelSelect, MemBerryRetrievalCoreFunnelAdapter } from './memberry-retrieval-core-funnel.js';
 
 const NAME = /\b[A-Z][A-Za-z0-9]*(?:[-_][A-Za-z0-9]+)*\b/g;
@@ -8,6 +8,11 @@ const NON_ENTITY = new Set(['A', 'After', 'Give', 'Identify', 'The', 'Then', 'Wh
 /** Deterministic stand-in for canonical Entity IDs supplied at write time. */
 function mentions(text: string): readonly string[] {
   return [...new Set((text.match(NAME) ?? []).filter((value) => !NON_ENTITY.has(value)))];
+}
+
+/** Frozen-dataset stand-in for the query planner's single resolved target. */
+export function plannerTargetStandIn(text: string): string | undefined {
+  return mentions(text).at(-1);
 }
 
 /**
@@ -34,7 +39,7 @@ export class MemBerryRetrievalCoreFunnelStructuredAdapter extends InMemoryAdapte
     this.queryCount += 1;
     const baseline = await this.control.query(request);
     const memories = (this.stores.get(namespaceKey(request.namespace)) ?? [])
-      .filter((memory) => memory.kind !== 'code');
+      .filter((memory) => memory.kind !== 'code' && isCurrent(memory, request.asOf));
     const byId = new Map(memories.map((memory) => [memory.id, memory]));
     const entityToMemories = new Map<string, LabMemory[]>();
     for (const memory of memories) {
@@ -44,7 +49,7 @@ export class MemBerryRetrievalCoreFunnelStructuredAdapter extends InMemoryAdapte
         entityToMemories.set(entity, rows);
       }
     }
-    const queryEntities = new Set(mentions(request.query));
+    const queryTarget = plannerTargetStandIn(request.query);
     const lexical = funnelSelect(memories, request.query, memories.length).scores;
     const baselineIds = new Set(baseline.results.map(({ id }) => id));
     const inserted = new Set<string>();
@@ -57,8 +62,8 @@ export class MemBerryRetrievalCoreFunnelStructuredAdapter extends InMemoryAdapte
       const seed = byId.get(result.id);
       if (!seed) continue;
       const seedEntities = mentions(seed.content);
-      if (!seedEntities.some((entity) => queryEntities.has(entity))) continue;
-      const bridges = seedEntities.filter((entity) => !queryEntities.has(entity));
+      if (queryTarget === undefined || !seedEntities.includes(queryTarget)) continue;
+      const bridges = seedEntities.filter((entity) => entity !== queryTarget);
       const candidates = bridges.flatMap((bridge) => entityToMemories.get(bridge) ?? [])
         .filter((memory) => memory.id !== seed.id && !baselineIds.has(memory.id) && !inserted.has(memory.id))
         .sort((left, right) => (lexical.get(right.id)! - lexical.get(left.id)!)

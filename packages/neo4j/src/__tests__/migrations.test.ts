@@ -152,7 +152,7 @@ describe('runMigrations', () => {
       .toHaveLength(4);
     expect(schemaStatements.filter((statement) => statement.includes('evidence_authority')))
       .toHaveLength(13);
-    expect(schemaStatements).toHaveLength(29);
+    expect(schemaStatements).toHaveLength(31);
     expect(schemaStatements.filter((s) => /^\s*CREATE\s/i.test(s)).every((s) => s.includes('IF NOT EXISTS'))).toBe(true);
     expect(schemaStatements.filter((s) => /^\s*MATCH\s/i.test(s)).every((s) => /IS NULL/.test(s))).toBe(true);
     expect(schemaStatements.filter((s) => /^\s*DROP INDEX\s/i.test(s)).every((s) => /IF EXISTS/.test(s))).toBe(true);

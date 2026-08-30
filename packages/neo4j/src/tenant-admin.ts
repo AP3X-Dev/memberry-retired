@@ -94,6 +94,11 @@ export class TenantAdmin {
          CALL { WITH k DETACH DELETE k } IN TRANSACTIONS OF 1000 ROWS`,
         { tenant },
       );
+      await session.run(
+        `MATCH (o:EpisodicIndexOutcome {tenant_id: $tenant})
+         CALL { WITH o DETACH DELETE o } IN TRANSACTIONS OF 1000 ROWS`,
+        { tenant },
+      );
       for (const label of TENANT_LABELS) {
         // Batch to avoid a huge single transaction on large tenants.
         await session.run(

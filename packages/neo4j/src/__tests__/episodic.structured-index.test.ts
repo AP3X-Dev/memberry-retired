@@ -13,10 +13,13 @@ const key: EpisodeIndexKeyNodeV1 = {
   tenant_id: 'tenant1', project_scope: 'project:memberry', created_at: node.created_at,
 };
 
-function driverWithAuthorized(ids: string[]) {
+function driverWithAuthorized(ids: string[], projectCount = 1) {
   const queries: string[] = [];
   const run = vi.fn(async (query: string) => {
     queries.push(query);
+    if (query.includes('RETURN count(DISTINCT root) AS count')) {
+      return { records: [{ get: () => projectCount }] };
+    }
     if (query.includes('RETURN collect(entityId) AS ids')) {
       return { records: [{ get: () => ids }] };
     }
@@ -35,7 +38,8 @@ describe('IDX-001A atomic EpisodicIndexKey persistence', () => {
     const fake = driverWithAuthorized(['ent1']);
     const store = new EpisodicStore(fake.driver as never);
     await expect(store.createWithLinks(node, { entityIds: ['ent1'] }, [key])).resolves.toBe('ep1');
-    expect(fake.queries[0]).toContain('CONTAINS*0..64');
+    expect(fake.queries[0]).toContain("root:Entity {type: 'project'}");
+    expect(fake.queries[1]).toContain('CONTAINS*0..64');
     expect(fake.queries.some((query) => query.includes('CREATE (e:Episodic'))).toBe(true);
     expect(fake.queries.some((query) => query.includes('CREATE (k:EpisodicIndexKey'))).toBe(true);
     expect(fake.close).toHaveBeenCalledOnce();
@@ -46,6 +50,15 @@ describe('IDX-001A atomic EpisodicIndexKey persistence', () => {
     const store = new EpisodicStore(fake.driver as never);
     await expect(store.createWithLinks(node, { entityIds: ['ent1'] }, [key]))
       .rejects.toThrow('structured_index:entity_out_of_scope');
+    expect(fake.queries).toHaveLength(2);
+    expect(fake.queries.every((query) => !query.includes('CREATE (e:Episodic'))).toBe(true);
+  });
+
+  it('rejects fact-only writes unless the tenant owns exactly one project root', async () => {
+    const fake = driverWithAuthorized([], 0);
+    const store = new EpisodicStore(fake.driver as never);
+    await expect(store.createWithLinks(node, {}, [{ ...key, kind: 'fact', entity_id: undefined }]))
+      .rejects.toThrow('structured_index:project_out_of_scope');
     expect(fake.queries).toHaveLength(1);
     expect(fake.queries[0]).not.toContain('CREATE (e:Episodic');
   });
@@ -55,6 +68,6 @@ describe('IDX-001A atomic EpisodicIndexKey persistence', () => {
     const store = new EpisodicStore(fake.driver as never);
     await expect(store.createWithLinks(node, {}, [{ ...key, entity_id: undefined, tenant_id: 'foreign' }]))
       .rejects.toThrow('structured_index:key_authority_mismatch');
-    expect(fake.queries).toHaveLength(0);
+    expect(fake.queries).toHaveLength(1);
   });
 });

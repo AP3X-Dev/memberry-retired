@@ -190,7 +190,10 @@ async function runDream(flags: Record<string, string | boolean>): Promise<void> 
 }
 
 function boundedIntFlag(flags: Record<string, string | boolean>, name: string, fallback: number, max: number): number {
-  const value = flags[name] === undefined ? fallback : Number(flags[name]);
+  const raw = flags[name];
+  if (raw === undefined) return fallback;
+  if (typeof raw !== 'string') throw new Error(`--${name} must have an integer value`);
+  const value = Number(raw);
   if (!Number.isInteger(value) || value < 1 || value > max) throw new Error(`--${name} must be an integer in 1..${max}`);
   return value;
 }
@@ -251,7 +254,11 @@ async function runIndexBackfill(positionals: string[], flags: Record<string, str
           const structured = await extractEpisodeStructuredIndexV1({
             content: episode.content, projectScope, llm, model, signal: controller.signal,
           });
-          if (!structured) { empty += 1; continue; }
+          if (!structured) {
+            await store.markBackfillEmpty(episode);
+            empty += 1;
+            continue;
+          }
           const texts = [...structured.facts, ...structured.aliases.flatMap(({ values }) => values)];
           const keys = buildEpisodeIndexKeysV1({
             episodeId: episode.id,

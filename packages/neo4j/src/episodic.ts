@@ -91,6 +91,16 @@ export class EpisodicStore {
           }
           const tenantId = node.tenant_id ?? DEFAULT_TENANT;
           const entityIds = [...new Set(links.entityIds ?? [])];
+          const project = await tx.run(
+            `MATCH (root:Entity {type: 'project'})
+             WHERE toLower(root.name) = substring($projectScope, 8)
+               AND (root.tenant_id = $tenantId OR (root.tenant_id IS NULL AND $tenantId = $defaultTenant))
+             RETURN count(DISTINCT root) AS count`,
+            { projectScope: node.scope, tenantId, defaultTenant: DEFAULT_TENANT },
+          );
+          if (Number(project.records[0]?.get('count') ?? 0) !== 1) {
+            throw new Error('structured_index:project_out_of_scope');
+          }
           if (entityIds.length > 0) {
             // Authorize every supplied Entity ID against exactly one path from
             // this tenant's project root before creating either the episode or

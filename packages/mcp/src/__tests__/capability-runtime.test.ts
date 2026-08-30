@@ -228,8 +228,9 @@ describe('SEC-001B exhaustive capability request matrix', () => {
     expect(capabilityRequestForToolV1(identity, 'berry_graph_export', { output_path: 1 })).toBeUndefined();
   });
 
-  it('derives project scope only for the six exact-scope memory block tools', () => {
+  it('derives project scope for berry_store and the six exact-scope memory block tools', () => {
     const exact = [
+      'berry_store',
       'berry_memory_read', 'berry_memory_insert', 'berry_memory_replace',
       'berry_memory_rewrite', 'berry_memory_promote', 'berry_memory_archive',
     ];

@@ -62,6 +62,9 @@ function denseArray(value: unknown, field: string, max: number): unknown[] {
   if (!Array.isArray(value) || Object.getPrototypeOf(value) !== Array.prototype || value.length > max) {
     throw new Error(`structured_index:${field}:invalid_array`);
   }
+  for (let index = 0; index < value.length; index += 1) {
+    if (!Object.hasOwn(value, index)) throw new Error(`structured_index:${field}:invalid_array`);
+  }
   return value;
 }
 

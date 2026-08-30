@@ -17,7 +17,7 @@
 | `berry_ask` | Dialectic retrieval: ask a question, get a synthesized cited answer (tunable `reasoning_level`) |
 | `berry_tools` | Enable/disable/list on-demand tool domains |
 
-`berry_store` may also include up to 32 atomic `facts`, 32 canonical `entities`, and 32 alias objects shaped as `{entity_id, values}` (up to 16 values). Each alias ID must appear in `entities`, and structured fields require canonical `scope: "project:<name>"`.
+`berry_store` may also include up to 32 atomic `facts`, 32 canonical `entities`, and 32 alias objects shaped as `{entity_id, values}` (up to 16 values). Facts plus alias values may contain at most 64 total retrieval keys. Each alias ID must appear in `entities`, and structured fields require canonical `scope: "project:<name>"`.
 
 ## On-Demand Domains
 

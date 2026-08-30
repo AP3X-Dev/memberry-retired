@@ -21,10 +21,33 @@ describe('IDX-001A backfill store', () => {
     expect(run.mock.calls[0]![0]).toContain('ep.tenant_id = $tenantId');
     expect(run.mock.calls[0]![0]).toContain('ep.scope = $projectScope');
     expect(run.mock.calls[0]![0]).toContain('NOT EXISTS { (ep)-[:HAS_INDEX_KEY]');
+    expect(run.mock.calls[0]![0]).toContain('NOT EXISTS { (ep)-[:HAS_INDEX_OUTCOME]');
     expect(run.mock.calls[0]![1]).toMatchObject({
       tenantId: 'tenant-a', projectScope: 'project:memberry', afterId: 'ep1', limit: 10,
     });
     expect(rows).toEqual([expect.objectContaining({ id: 'ep2', tenantId: 'tenant-a' })]);
+    expect(close).toHaveBeenCalledOnce();
+  });
+
+  it('persists an idempotent scoped outcome for successful empty extraction', async () => {
+    const queries: string[] = [];
+    const run = vi.fn(async (query: string) => {
+      queries.push(query);
+      return query.includes('RETURN count(ep)')
+        ? { records: [record({ count: 1 })] }
+        : { records: [] };
+    });
+    const close = vi.fn(async () => undefined);
+    const driver = { session: () => ({
+      executeWrite: (work: (tx: { run: typeof run }) => unknown) => work({ run }), close,
+    }) } as unknown as Driver;
+    await new EpisodicIndexStore(driver).markBackfillEmpty({
+      id: 'ep1', createdAt: '2026-08-30T00:00:00.000Z', content: 'no extractable fact',
+      tenantId: 'tenant-a', projectScope: 'project:memberry',
+    });
+    expect(queries[0]).toContain('tenant_id: $tenantId, scope: $projectScope');
+    expect(queries[1]).toContain('MERGE (outcome:EpisodicIndexOutcome {id: $outcomeId})');
+    expect(queries[1]).toContain("outcome.outcome = 'empty'");
     expect(close).toHaveBeenCalledOnce();
   });
 
@@ -59,7 +82,7 @@ describe('IDX-001A backfill store', () => {
     const calls: Array<[string, unknown]> = [];
     const run = vi.fn(async (query: string, params: unknown) => {
       calls.push([query, params]);
-      return query.includes('RETURN count(key)')
+      return query.includes('keyCount + count(outcome) AS count')
         ? { records: [record({ count: 3 })] }
         : { records: [] };
     });
@@ -70,10 +93,12 @@ describe('IDX-001A backfill store', () => {
     await expect(new EpisodicIndexStore(driver).deleteDerived({
       tenantId: 'tenant-a', projectScope: 'project:memberry',
     })).resolves.toBe(3);
-    expect(calls).toHaveLength(2);
+    expect(calls).toHaveLength(3);
     expect(calls[1]![0]).toContain('DETACH DELETE key');
     expect(calls[1]![0]).not.toContain('DELETE ep');
     expect(calls[1]![1]).toEqual({ tenantId: 'tenant-a', projectScope: 'project:memberry' });
+    expect(calls[2]![0]).toContain('DETACH DELETE outcome');
+    expect(calls[2]![0]).not.toContain('DELETE ep');
     expect(close).toHaveBeenCalledOnce();
   });
 });
