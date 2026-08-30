@@ -4,6 +4,7 @@ import { isProxy } from 'node:util/types';
 import { redactSecrets } from '@memberry/core';
 
 import { SERVED_RERANKER_PROVIDER_IDENTITY } from './served-reranker.js';
+import { RETRIEVAL_SOURCE_TYPES, type SourceType } from './types.js';
 
 export const RETRIEVAL_TRACE_VERSION = '1.0.0' as const;
 export const RETRIEVAL_TRACE_NUMBER_DECIMALS = 6 as const;
@@ -21,32 +22,38 @@ const HARD_LIMITS = Object.freeze({
   mmrRecordsPerRound: 128,
   mmrRecordsTotal: 4096,
   mmrPairwisePerRecord: 64,
-  mmrPairwiseTotal: 8192,
+  // Ranked fusion over-fetches at most 100 candidates for a 50-result window.
+  // Its complete trace records 82,075 pairwise comparisons. Keep a bounded
+  // margin above that served maximum.
+  mmrPairwiseTotal: 98304,
   stageFailures: 32,
 });
 
 const DEFAULT_LIMITS = Object.freeze({
-  maxCandidates: 128,
+  // Runtime candidate requests are already sealed at the 512-candidate hard
+  // ceiling. A trace must be able to describe that bounded input even though
+  // fusion admits at most 50 candidates to MMR and reranking.
+  maxCandidates: 512,
   maxEvents: 4096,
   maxChannelsPerCandidate: 8,
   maxFiltersPerCandidate: 12,
   maxScoresPerCandidate: 8,
   maxExclusionReasonsPerCandidate: 8,
-  maxMmrRounds: 32,
+  maxMmrRounds: 64,
   maxMmrRecordsPerRound: 128,
-  maxMmrRecordsTotal: 2048,
-  maxMmrPairwisePerRecord: 32,
-  maxMmrPairwiseTotal: 4096,
+  maxMmrRecordsTotal: 4096,
+  maxMmrPairwisePerRecord: 64,
+  maxMmrPairwiseTotal: 90112,
   maxStageFailures: 32,
 });
 
 const AGGREGATE_LIMITS = Object.freeze({
   // These ceilings dominate the collector's hard maxima, including duplicated
   // terminal-reason mirrors, while still bounding validation to a small trace.
-  arrays: 6144,
-  arrayEntries: 36_864,
-  records: 28_672,
-  recordFields: 131_072,
+  arrays: 8192,
+  arrayEntries: 114_688,
+  records: 98_304,
+  recordFields: 262_144,
   scalarBytes: 4_194_304,
   depth: 20,
 });
@@ -55,8 +62,7 @@ const MAX_TRACE_NUMBER = 1_000_000;
 const DANGEROUS_KEYS = new Set(['__proto__', 'prototype', 'constructor']);
 
 export type RetrievalTraceAlgorithmVersion = 'ranked-v1' | 'ranked-v2' | 'deterministic-v1' | 'deterministic-v2';
-export type RetrievalTraceSourceType =
-  | 'semantic' | 'episodic' | 'symbol' | 'arch_entity' | 'aspect' | 'fact' | 'block';
+export type RetrievalTraceSourceType = SourceType;
 export type RetrievalTraceChannel =
   | 'memory.scope' | 'memory.semantic-vector' | 'memory.episodic-vector' | 'memory.fact'
   | 'memory.block' | 'memory.graph' | 'code.fulltext' | 'code.lexical-vector'
@@ -93,7 +99,7 @@ export type RetrievalTraceIncompleteReason =
   | 'candidate-identity-collision' | 'mmr-gap' | 'limit-overflow';
 
 const ALGORITHMS = ['ranked-v1', 'ranked-v2', 'deterministic-v1', 'deterministic-v2'] as const;
-const SOURCE_TYPES = ['semantic', 'episodic', 'symbol', 'arch_entity', 'aspect', 'fact', 'block'] as const;
+const SOURCE_TYPES = RETRIEVAL_SOURCE_TYPES;
 export const RETRIEVAL_TRACE_CHANNEL_ORDER = Object.freeze([
   'memory.scope', 'memory.semantic-vector', 'memory.episodic-vector', 'memory.fact', 'memory.block', 'memory.graph',
   'code.fulltext', 'code.lexical-vector', 'code.dense-vector', 'code.semantic-vector',
@@ -1399,32 +1405,11 @@ function rankedV2PresentationOrder(trace: RetrievalTraceV1): string[] {
     const event = terminals[index]!;
     if (event.outcome === 'included') TRACE_SET_ADD(included, event.ref);
   }
-  const sourceByRef = new TRACE_MAP<string, RetrievalTraceSourceType>();
-  for (let index = 0; index < trace.candidates.length; index += 1) {
-    const candidate = trace.candidates[index]!;
-    TRACE_MAP_SET(sourceByRef, candidate.ref, candidate.sourceType);
-  }
-  const groupOrder: RetrievalTraceSourceType[] = [];
-  const groups = new TRACE_MAP<RetrievalTraceSourceType, string[]>();
+  const result: string[] = [];
   for (let index = 0; index < ranked.length; index += 1) {
     const ref = ranked[index]!;
     if (!TRACE_SET_HAS(included, ref)) continue;
-    const source = TRACE_MAP_GET(sourceByRef, ref);
-    if (source === undefined) continue;
-    let group = TRACE_MAP_GET(groups, source);
-    if (group === undefined) {
-      group = [];
-      TRACE_MAP_SET(groups, source, group);
-      defineTraceArrayItem(groupOrder, groupOrder.length, source);
-    }
-    defineTraceArrayItem(group, group.length, ref);
-  }
-  const result: string[] = [];
-  for (let groupIndex = 0; groupIndex < groupOrder.length; groupIndex += 1) {
-    const group = TRACE_MAP_GET(groups, groupOrder[groupIndex]!)!;
-    for (let itemIndex = 0; itemIndex < group.length; itemIndex += 1) {
-      defineTraceArrayItem(result, result.length, group[itemIndex]!);
-    }
+    defineTraceArrayItem(result, result.length, ref);
   }
   return result;
 }
@@ -1441,7 +1426,7 @@ function reconstructFromEvents(trace: RetrievalTraceV1): RetrievalTraceReplayRes
   }
   TRACE_ARRAY_SORT(outputs, (a, b) => a.rank - b.rank);
   const terminals = terminalEvents(trace);
-  // V2 output ranks are derived from canonical source-final candidate order and
+  // V2 output ranks are derived from the calibrated reranker order and
   // terminal inclusion. Output events and top-level arrays are checked echoes,
   // never the authority used to replay the deterministic algorithm.
   const resultOrder = trace.algorithmVersion === 'ranked-v2'
@@ -1750,7 +1735,7 @@ function conformanceErrors(trace: RetrievalTraceV1): string[] {
       TRACE_ARRAY_SORT(orderedOutputs, (a, b) => a.rank - b.rank);
       const echo = mapTraceArray(orderedOutputs, (event) => event.ref);
       if (canonicalTraceJson(derived) !== canonicalTraceJson(echo)) {
-        appendTraceError(errors, 'ranked-v2 output echo does not match derived grouped reranker order');
+        appendTraceError(errors, 'ranked-v2 output echo does not match derived reranker order');
       }
     }
   } else if (rerankers.length !== 0) {

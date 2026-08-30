@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import neo4j, { Record as Neo4jRecord } from 'neo4j-driver';
+import { EMBEDDING_DIM } from '@memberry/core';
 
 import { canonicalTraceJson, replayRetrievalTrace, RETRIEVAL_TRACE_CHANNEL_ORDER } from '../trace.js';
 import { resolveRuntimeQueryPlannerAuthorityV1 } from '../runtime-query-planner.js';
@@ -50,8 +51,12 @@ function driver(rows: Record<string, Neo4jRecord[]>): { driver: RuntimeCandidate
       } }));
       return { records: [record(['ordinal', 'eid', 'facts'], ['0', entityId, facts])] };
     }
-    const kind = query.includes('MATCH (s:Semantic)')
-      ? 'scope'
+    const kind = query.includes('MATCH (ep:Episodic)')
+      ? 'episodicVector'
+      : query.includes('vector.similarity.cosine(s.embedding')
+        ? 'semanticVector'
+        : query.includes('MATCH (s:Semantic)')
+          ? 'scope'
       : query.includes('MATCH (b:MemoryBlock') ? 'block' : 'arch';
     return { records: rows[kind] ?? [] };
   };
@@ -123,9 +128,70 @@ describe('RET-003B runtime candidate channel service', () => {
       else {
         expect(params).toMatchObject({ tenantId: 'tenant-a', projectScope: project, entityId });
         expect(neo4j.isInt(params.rowLimit)).toBe(true);
-        expect(neo4j.integer.toNumber(params.rowLimit as neo4j.Integer)).toBe(65);
+        expect(neo4j.integer.toNumber(params.rowLimit as neo4j.Integer)).toBe(64);
       }
     }
+  });
+
+  it('ranks semantic and episodic vectors only inside the receipt-authorized entity set', async () => {
+    const rows = validRows();
+    rows.semanticVector = [record(
+      ['tenantId', 'projectScope', 'resolvedEntityId', 'evidenceId', 'title', 'content', 'score'],
+      ['tenant-a', project, entityId, 'semantic-1', 'Semantic', 'Scoped memory', 0.95],
+    )];
+    rows.episodicVector = [record(
+      ['tenantId', 'projectScope', 'resolvedEntityId', 'evidenceId', 'title', 'content', 'score'],
+      ['tenant-a', project, entityId, 'episode-needle', 'decision', 'episodic needle decision', 0.91],
+    )];
+    const mock = driver(rows);
+    const queryVector = new Array(EMBEDDING_DIM).fill(0);
+    queryVector[0] = 1;
+    const execution = await new RuntimeCandidateChannelService(mock.driver).execute(
+      await authorityReceipt(),
+      { includeArchitecture: false, includeMemory: true, queryVector },
+    );
+
+    expect(execution.settlements.filter((item) => item.outcome === 'success').map((item) => item.channel))
+      .toEqual([
+        'memory.scope', 'memory.semantic-vector', 'memory.episodic-vector', 'memory.fact', 'memory.block',
+      ]);
+    const semanticQuery = mock.calls.find(([query]) => query.includes('vector.similarity.cosine(s.embedding'));
+    const episodicQuery = mock.calls.find(([query]) => query.includes('MATCH (ep:Episodic)'));
+    expect(semanticQuery?.[0].indexOf('MATCH path')).toBeLessThan(semanticQuery?.[0].indexOf('vector.similarity') ?? -1);
+    expect(semanticQuery?.[0]).toContain('OPTIONAL MATCH (s)-[r:ABOUT]->(target)');
+    expect(semanticQuery?.[0]).toContain('r IS NULL AND target = root');
+    expect(episodicQuery?.[0].indexOf('MATCH path')).toBeLessThan(episodicQuery?.[0].indexOf('vector.similarity') ?? -1);
+    expect(episodicQuery?.[0]).toContain('MATCH (ep:Episodic)-[r:REFERENCES]->(target)');
+    expect(semanticQuery?.[1]).toMatchObject({
+      tenantId: 'tenant-a', projectScope: project, entityId, queryVector,
+    });
+    expect(episodicQuery?.[1]).toMatchObject({
+      tenantId: 'tenant-a', projectScope: project, entityId, queryVector,
+    });
+
+    const served = await candidateAssembler(createServedRerankerProviderV1())
+      .assembleCandidateExecutionServed('episodic needle decision', execution, 8_000, false, true, true);
+    const ids = served.context.sections.flatMap((section) => section.items).map((item) => item.id);
+    expect(ids[0]).toBe('episode-needle');
+    expect(ids.filter((id) => id === 'semantic-1')).toHaveLength(1);
+    expect(served.trace!.events).toContainEqual(expect.objectContaining({
+      kind: 'reranker-stage', outcome: 'reranked',
+    }));
+
+    const tight = await candidateAssembler(createServedRerankerProviderV1())
+      .assembleCandidateExecutionServed('episodic subject project scoped', execution, 21, false, true, false);
+    expect(new Set(tight.context.sections.map((section) => section.source_type)))
+      .toEqual(new Set(['semantic', 'episodic', 'fact', 'block']));
+    expect(tight.context.token_count).toBeLessThanOrEqual(21);
+  });
+
+  it('rejects malformed query vectors before opening a database session', async () => {
+    const mock = driver(validRows());
+    await expect(new RuntimeCandidateChannelService(mock.driver).execute(
+      await authorityReceipt(),
+      { includeArchitecture: false, includeMemory: true, queryVector: [1] },
+    )).rejects.toThrow('candidate_runtime:invalid_query_vector');
+    expect(mock.driver.session).not.toHaveBeenCalled();
   });
 
   it('rejects an unissued or foreign-service receipt before opening a session', async () => {

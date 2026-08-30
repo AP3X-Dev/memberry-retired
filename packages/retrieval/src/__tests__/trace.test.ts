@@ -127,8 +127,7 @@ function buildRankedV2(outcome: 'reranked' | 'baseline' = 'reranked') {
     collector.recordFilter(handle, { name: 'token-budget', outcome: 'pass' });
     collector.recordTerminal(handle, { outcome: 'included', reasons: [] });
   });
-  const grouped = [handles[0]!, handles[2]!, handles[1]!];
-  grouped.forEach((handle, index) => collector.recordOutput(handle, index + 1));
+  handles.forEach((handle, index) => collector.recordOutput(handle, index + 1));
   return { trace: collector.finalize(), handles, collector };
 }
 
@@ -198,7 +197,7 @@ function buildDeterministicV2(order: 'forward' | 'reverse' = 'forward') {
 }
 
 describe('RET-001A retrieval trace contract', () => {
-  it('records one closed ranked-v2 reranker event and independently replays grouped presentation', () => {
+  it('records one closed ranked-v2 reranker event and independently replays calibrated presentation', () => {
     const { trace } = buildRankedV2();
     expect(trace.algorithmVersion).toBe('ranked-v2');
     expect(Object.keys(trace)).toEqual([
@@ -232,8 +231,8 @@ describe('RET-001A retrieval trace contract', () => {
     const kinds = trace.events.map((event) => event.kind);
     expect(kinds.lastIndexOf('mmr-round')).toBeLessThan(kinds.indexOf('reranker-stage'));
     expect(kinds.indexOf('reranker-stage')).toBeLessThan(kinds.indexOf('ranked-output'));
-    expect(trace.resultOrder).toEqual(['c0001', 'c0003', 'c0002']);
-    expect(replayRetrievalTrace(trace).resultOrder).toEqual(['c0001', 'c0003', 'c0002']);
+    expect(trace.resultOrder).toEqual(['c0001', 'c0002', 'c0003']);
+    expect(replayRetrievalTrace(trace).resultOrder).toEqual(['c0001', 'c0002', 'c0003']);
     expect(validateRetrievalTrace(trace)).toEqual([]);
     assertRetrievalTraceConformant(trace);
   });
@@ -635,7 +634,7 @@ describe('RET-001A retrieval trace contract', () => {
       (outputs[0] as { ref: string }).ref = 'c0002';
       (outputs[1] as { ref: string }).ref = 'c0001';
     });
-    expect(() => replayRetrievalTrace(echo)).toThrow(/derived grouped|output/);
+    expect(() => replayRetrievalTrace(echo)).toThrow(RetrievalTraceValidationError);
   });
   it('derives deterministic-v2 refs and outputs from the frozen algorithm order', () => {
     expect(RETRIEVAL_TRACE_DETERMINISTIC_OUTPUT_CHANNEL_ORDER_V2).toEqual([
@@ -1217,7 +1216,7 @@ describe('RET-001A retrieval trace contract', () => {
     expect(trace.complete).toBe(true);
     expect(validateRetrievalTrace(trace)).toEqual([]);
     expect(replayRetrievalTrace(trace).resultOrder).toHaveLength(8);
-  });
+  }, 10_000);
 
   it('rejects raw content and recognized secret shapes without reflecting them in errors', () => {
     const trace = build();

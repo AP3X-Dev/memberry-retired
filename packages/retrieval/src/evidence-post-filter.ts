@@ -5,6 +5,7 @@ import {
   type CandidateChannelRequestV1,
   type CandidateChannelTemporalFrameV1,
 } from './candidate-channel.js';
+import { RETRIEVAL_SOURCE_TYPES } from './types.js';
 
 const OBJECT_CREATE = Object.create;
 const OBJECT_DEFINE_PROPERTY = Object.defineProperty;
@@ -498,9 +499,7 @@ function parseReceipt(
       SAFE_ENTITY_ID,
     );
     const temporalFrame = receiptTemporalFrame(root.temporalFrame, budget);
-    const sourceType = receiptLiteral(root.sourceType, [
-      'semantic', 'episodic', 'symbol', 'arch_entity', 'aspect', 'fact', 'block',
-    ] as const, budget);
+    const sourceType = receiptLiteral(root.sourceType, RETRIEVAL_SOURCE_TYPES, budget);
     const evidenceId = receiptString(
       root.evidenceId,
       MAX_EVIDENCE_ID_BYTES,

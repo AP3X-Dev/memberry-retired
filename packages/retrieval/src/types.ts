@@ -3,7 +3,11 @@
 
 // === Retrieval result (unified across all sources) ===
 
-export type SourceType = 'semantic' | 'episodic' | 'symbol' | 'arch_entity' | 'aspect' | 'fact';
+export const RETRIEVAL_SOURCE_TYPES = Object.freeze([
+  'semantic', 'episodic', 'symbol', 'arch_entity', 'aspect', 'fact', 'block',
+] as const);
+
+export type SourceType = typeof RETRIEVAL_SOURCE_TYPES[number];
 
 export interface RetrievalResult {
   id: string;
@@ -85,7 +89,7 @@ export interface FeedbackSignal {
 
 export interface BoostFactors {
   entity_boosts: Record<string, number>;
-  source_type_boosts: Record<Exclude<SourceType, 'fact'>, number>
+  source_type_boosts: Record<Exclude<SourceType, 'fact' | 'block'>, number>
     & Partial<Record<SourceType, number>>;
 }
 

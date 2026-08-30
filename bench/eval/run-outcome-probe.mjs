@@ -26,12 +26,16 @@ const TEST_PATH = /__tests__|\.test\.|\.spec\./
 const EVIDENCE_ID = /<!--\s+([^\s>]+)\s+-->/g
 
 function parseArgs(argv) {
-  const args = { cases: 'bench/eval/outcome-cases.jsonl', project: 'memberry', limit: 10, plane: null }
+  const args = {
+    cases: 'bench/eval/outcome-cases.jsonl', project: 'memberry', limit: 10, plane: null, caseId: null, memoryOnly: false,
+  }
   for (let i = 0; i < argv.length; i += 1) {
     if (argv[i] === '--cases') args.cases = argv[i + 1]
     if (argv[i] === '--project') args.project = argv[i + 1]
     if (argv[i] === '--limit') args.limit = Number(argv[i + 1])
     if (argv[i] === '--plane') args.plane = argv[i + 1]
+    if (argv[i] === '--case') args.caseId = argv[i + 1]
+    if (argv[i] === '--memory-only') args.memoryOnly = true
   }
   return args
 }
@@ -44,9 +48,12 @@ if (!token) {
 }
 
 const allCases = readFileSync(args.cases, 'utf8').trim().split('\n').map((l) => JSON.parse(l))
-const cases = args.plane === null
-  ? allCases
-  : allCases.filter((c) => (c.plane ?? 'code') === args.plane)
+const cases = allCases.filter((c) => {
+  const plane = c.plane ?? 'code'
+  return (!args.memoryOnly || plane !== 'code')
+    && (args.plane === null || plane === args.plane)
+    && (args.caseId === null || c.id === args.caseId)
+})
 if (cases.length === 0) {
   console.error(`OUTCOME fatal: no cases selected for plane=${args.plane ?? 'all'}`)
   process.exit(2)
@@ -67,11 +74,14 @@ for (const c of cases) {
   const isCode = plane === 'code'
   const tool = isCode ? 'berry_code_search' : (c.tool ?? 'berry_context')
   console.error(`OUTCOME progress case=${c.id} plane=${plane} tool=${tool}`)
+  const queryField = tool === 'berry_grep' ? 'pattern'
+    : tool === 'berry_ask' ? 'question'
+      : 'task'
   const input = isCode
     ? { query: c.question, project_name: args.project, limit: args.limit }
     : {
         ...(c.input ?? {}),
-        ...(tool === 'berry_context' ? { task: c.question } : { question: c.question }),
+        [queryField]: c.question,
         ...(c.input?.project_name === undefined ? { project_name: args.project } : {}),
       }
   let res
@@ -82,7 +92,7 @@ for (const c of cases) {
     continue
   }
   if (res.isError) {
-    rows.push({ id: c.id, plane, error: res.text.slice(0, 120) })
+    rows.push({ id: c.id, plane, error: res.text.slice(0, 500) })
     continue
   }
   let rank = -1
@@ -120,10 +130,26 @@ for (const c of cases) {
     rank = evidenceIds.findIndex((id) => expected.has(id))
     top5 = evidenceIds.slice(0, 5)
   }
+  let reranker = null
+  if (!isCode && c.input?.include_trace === true) {
+    for (const block of res.texts ?? []) {
+      try {
+        const parsed = JSON.parse(block)
+        const event = Array.isArray(parsed?.events)
+          ? parsed.events.find((candidate) => candidate?.kind === 'reranker-stage')
+          : undefined
+        if (event?.outcome === 'reranked' || event?.outcome === 'baseline') {
+          reranker = event.outcome
+          break
+        }
+      } catch { /* ordinary markdown block */ }
+    }
+  }
   rows.push({
     id: c.id,
     plane,
     rank: rank < 0 ? null : rank + 1,
+    reranker,
     testInTop5: isCode ? top5.filter((x) => TEST_PATH.test(String(x.file ?? ''))).length : 0,
     variableInTop5: isCode ? top5.filter((x) => x.kind === 'variable').length : 0,
     top5: isCode
@@ -140,6 +166,11 @@ const fmt = (v) => v.toFixed(4)
 
 console.log(`OUTCOME n=${scored.length} errors=${rows.length - scored.length} project=${args.project}`)
 console.log(`OUTCOME answerAt1=${fmt(at(1) / (scored.length || 1))} answerAt5=${fmt(at(5) / (scored.length || 1))} answerAt10=${fmt(at(10) / (scored.length || 1))} mrr=${fmt(mrr)}`)
+const rerankerEligible = scored.filter((r) => r.plane !== 'code' && r.reranker !== null)
+const reranked = rerankerEligible.filter((r) => r.reranker === 'reranked').length
+const baseline = rerankerEligible.filter((r) => r.reranker === 'baseline').length
+const rerankerMissing = scored.filter((r) => r.plane !== 'code' && r.reranker === null).length
+console.log(`OUTCOME rerankerEligible=${rerankerEligible.length} reranked=${reranked} baseline=${baseline} missing=${rerankerMissing}`)
 const codeRows = scored.filter((r) => r.plane === 'code')
 const codeShare = (f) => codeRows.reduce((a, r) => a + r[f], 0) / (codeRows.length * 5 || 1)
 console.log(`OUTCOME variableShare5=${fmt(codeShare('variableInTop5'))} testFileShare5=${fmt(codeShare('testInTop5'))}`)
@@ -154,5 +185,5 @@ for (const r of rows) {
     console.log(`OUTCOME case=${r.id} plane=${r.plane} ERROR=${r.error}`)
     continue
   }
-  console.log(`OUTCOME case=${r.id} plane=${r.plane} rank=${r.rank ?? 'MISS'} varTop5=${r.variableInTop5} testTop5=${r.testInTop5} top5=${r.top5.join(' ')}`)
+  console.log(`OUTCOME case=${r.id} plane=${r.plane} rank=${r.rank ?? 'MISS'} reranker=${r.reranker ?? 'missing'} varTop5=${r.variableInTop5} testTop5=${r.testInTop5} top5=${r.top5.join(' ')}`)
 }

@@ -13,6 +13,7 @@ import type {
   BoostFactors,
   CodePlaneStatusV1,
 } from './types.js';
+import { RETRIEVAL_SOURCE_TYPES } from './types.js';
 import { rrfFusion, dedup } from './fusion.js';
 import { DeterministicAssembler, normalizeResolvedEntityIds } from './deterministic.js';
 import { FeedbackTracker, type FeedbackRedisLayer } from './feedback.js';
@@ -129,6 +130,22 @@ export interface TracedUnifiedContext {
 
 /** @internal RET-004B candidate-only post-fusion/dedup observation seam. */
 export type RerankerShadowPostDedupObserverV1 = (candidates: readonly RetrievalResult[]) => void;
+
+function preferSemanticVectorRanking(listsByChannel: Map<string, RetrievalResult[]>): void {
+  const vector = listsByChannel.get('memory.semantic-vector');
+  if (!vector || vector.length === 0) return;
+  const scoped = listsByChannel.get('memory.scope') ?? [];
+  const seen = new Set(vector.map((result) => result.id));
+  // Confidence-ordered scope results are a coverage fallback, not an independent relevance
+  // vote. When query vectors are available, lead with their semantic ordering and append only
+  // scope-only evidence; otherwise the same Semantic receives two RRF votes and can crowd out
+  // better Facts, Episodes, and Blocks merely because it was fetched twice.
+  listsByChannel.set('memory.semantic-vector', [
+    ...vector,
+    ...scoped.filter((result) => !seen.has(result.id)),
+  ]);
+  listsByChannel.delete('memory.scope');
+}
 
 /** @internal RET-007 v4: default-off multihop expansion configuration (flag read at bootstrap). */
 export interface MultihopExpansionOptionsV1 {
@@ -320,6 +337,14 @@ export class UnifiedAssembler {
     this.multihop = { ...options };
   }
 
+  /** @internal Query vector for the receipt-bound candidate runtime. The runtime snapshots and
+   * validates the vector before using it, and every database reader authorizes its candidate set
+   * before evaluating similarity. */
+  async candidateQueryVector(task: string): Promise<number[] | undefined> {
+    assertBoundedQueryInput(task);
+    return this.makeSharedQueryVector(task)();
+  }
+
   /**
    * Dialectic retrieval (berry_ask): retrieve ranked evidence, then synthesize a
    * cited answer instead of returning raw chunks. Reasoning level trades
@@ -407,6 +432,7 @@ export class UnifiedAssembler {
     const listsByChannel = new Map<string, RetrievalResult[]>();
     const observations: RuntimeStructuralObservation[] = [];
     const evidenceByPrivateId = new Map<string, string>();
+    const privateIdByEvidence = new Map<string, string>();
     const incompleteReasons: RetrievalTraceIncompleteReason[] = [];
     for (const settlement of execution.settlements) {
       if (settlement.outcome === 'safe-failure' && settlement.code === 'budget-exceeded') {
@@ -422,7 +448,16 @@ export class UnifiedAssembler {
       });
     }
     for (const candidate of execution.candidates) {
-      const privateId = `${candidate.channel}\u0000${candidate.rank}\u0000${candidate.evidenceId}`;
+      // The same Semantic can arrive through scope and vector channels. Give it one private
+      // identity so RRF combines the independent ranks instead of spending two top-50 slots on
+      // duplicate evidence. Source type is part of the key so unrelated stores cannot collide on
+      // an externally supplied id.
+      const evidenceKey = `${candidate.sourceType}\u0000${candidate.evidenceId}`;
+      let privateId = privateIdByEvidence.get(evidenceKey);
+      if (privateId === undefined) {
+        privateId = `${candidate.channel}\u0000${candidate.rank}\u0000${candidate.evidenceId}`;
+        privateIdByEvidence.set(evidenceKey, privateId);
+      }
       const result: RetrievalResult = {
         id: privateId,
         source_type: candidate.sourceType as RetrievalResult['source_type'],
@@ -447,9 +482,13 @@ export class UnifiedAssembler {
         observation.finalIds.push(privateId);
       }
     }
+    preferSemanticVectorRanking(listsByChannel);
     const lists = execution.request.plannedChannels
       .map((channel) => listsByChannel.get(channel))
       .filter((list): list is RetrievalResult[] => list !== undefined);
+    // Apply the established bounded lexical signal before MMR chooses the 50-item served
+    // window. The post-MMR served reranker cannot recover a highly relevant authorized memory
+    // that rank fusion already discarded, which was especially visible for older Semantics.
     const traceAdapter = traced ? new RankedRuntimeTraceAdapter(observations, lists, {
       includeCode: false,
       includeArchitecture,
@@ -510,6 +549,7 @@ export class UnifiedAssembler {
     const listsByChannel = new Map<string, RetrievalResult[]>();
     const observations: RuntimeStructuralObservation[] = [];
     const evidenceByPrivateId = new Map<string, string>();
+    const privateIdByEvidence = new Map<string, string>();
     const incompleteReasons: RetrievalTraceIncompleteReason[] = [];
     for (const settlement of execution.settlements) {
       if (settlement.outcome === 'safe-failure' && settlement.code === 'budget-exceeded') {
@@ -525,7 +565,12 @@ export class UnifiedAssembler {
       });
     }
     for (const candidate of execution.candidates) {
-      const privateId = `${candidate.channel}\u0000${candidate.rank}\u0000${candidate.evidenceId}`;
+      const evidenceKey = `${candidate.sourceType}\u0000${candidate.evidenceId}`;
+      let privateId = privateIdByEvidence.get(evidenceKey);
+      if (privateId === undefined) {
+        privateId = `${candidate.channel}\u0000${candidate.rank}\u0000${candidate.evidenceId}`;
+        privateIdByEvidence.set(evidenceKey, privateId);
+      }
       const result: RetrievalResult = {
         id: privateId,
         source_type: candidate.sourceType as RetrievalResult['source_type'],
@@ -672,6 +717,7 @@ export class UnifiedAssembler {
         codeFailure = 'query-failed';
       }
     }
+    preferSemanticVectorRanking(listsByChannel);
     const lists = execution.request.plannedChannels
       .map((channel) => listsByChannel.get(channel))
       .filter((list): list is RetrievalResult[] => list !== undefined);
@@ -2122,7 +2168,7 @@ const RUNTIME_FAILURE_CODES = new Set<RetrievalTraceFailureCode>([
   'unavailable', 'timeout', 'query-failed', 'invalid-result',
 ]);
 const RUNTIME_SOURCE_TYPES = new Set<RuntimeStructuralCandidateObservation['sourceType']>([
-  'semantic', 'episodic', 'symbol', 'arch_entity', 'aspect', 'fact', 'block',
+  ...RETRIEVAL_SOURCE_TYPES,
 ]);
 
 function strictDataRecord(
@@ -2376,8 +2422,6 @@ function renderCodePlaneSegment(status: CodePlaneStatusV1): string {
 }
 
 function groupAndBudget(results: readonly RetrievalResult[], maxTokens: number): ContextSection[] {
-  const groups = new Map<string, { heading: string; items: ContextItem[] }>();
-
   const headingMap: Record<string, string> = {
     arch_entity: 'Architecture',
     symbol: 'Code',
@@ -2385,6 +2429,7 @@ function groupAndBudget(results: readonly RetrievalResult[], maxTokens: number):
     episodic: 'History',
     aspect: 'Cross-Cutting Concerns',
     fact: 'Facts',
+    block: 'Core Memory',
   };
 
   // RET-FR-4: fill the budget by score-per-token density rather than fused rank, so one
@@ -2401,47 +2446,78 @@ function groupAndBudget(results: readonly RetrievalResult[], maxTokens: number):
   // fused order so section/item ordering is unchanged.
   const itemTokens = (result: RetrievalResult): number => Math.ceil(result.content.length / 4);
   const density = (result: RetrievalResult): number => result.score / Math.max(itemTokens(result), 1);
-  const firstFit = (order: readonly RetrievalResult[]): { set: Set<RetrievalResult>; score: number } => {
+  const firstFit = (
+    order: readonly RetrievalResult[],
+    budget = maxTokens,
+  ): { set: Set<RetrievalResult>; score: number } => {
     const set = new Set<RetrievalResult>();
     let score = 0;
     let tokens = 0;
     for (const result of order) {
       const cost = itemTokens(result);
-      if (tokens + cost > maxTokens) continue;
+      if (tokens + cost > budget) continue;
       set.add(result);
       score += result.score;
       tokens += cost;
     }
     return { set, score };
   };
-  const packed = firstFit([...results].sort((a, b) => density(b) - density(a)));
-  const ranked = firstFit(results);
+  // Preserve the best available evidence from each memory plane before optimizing the rest of
+  // the token budget. Without this small reserve, many short same-plane items can maximize summed
+  // score while completely deleting a relevant Fact, Episode, Semantic, or core MemoryBlock from
+  // the context an agent actually receives.
+  const memorySources = new Set(['semantic', 'episodic', 'fact', 'block']);
+  const reservedSources = new Set<string>();
+  const reserved = new Set<RetrievalResult>();
+  let reservedTokens = 0;
+  for (const result of maxTokens >= 20 ? results : []) {
+    if (!memorySources.has(result.source_type) || reservedSources.has(result.source_type)) continue;
+    reservedSources.add(result.source_type);
+    const cost = itemTokens(result);
+    // A single oversized plane head must not recreate the exact crowd-out failure this packer
+    // was introduced to prevent. It can still win through the normal ranked/single packing.
+    if (cost > Math.floor(maxTokens / 2)) continue;
+    if (reservedTokens + cost > maxTokens) continue;
+    reserved.add(result);
+    reservedTokens += cost;
+  }
+  const remaining = results.filter((result) => !reserved.has(result));
+  const remainingBudget = maxTokens - reservedTokens;
+  const packed = firstFit([...remaining].sort((a, b) => density(b) - density(a)), remainingBudget);
+  const ranked = firstFit(remaining, remainingBudget);
   let best: RetrievalResult | undefined;
-  for (const result of results) {
-    if (itemTokens(result) > maxTokens) continue;
+  for (const result of remaining) {
+    if (itemTokens(result) > remainingBudget) continue;
     if (best === undefined || result.score > best.score) best = result;
   }
   const bestOfPacks = packed.score >= ranked.score ? packed : ranked;
-  const selected = best !== undefined && best.score > bestOfPacks.score ? new Set([best]) : bestOfPacks.set;
+  const selected = new Set(reserved);
+  const fill = best !== undefined && best.score > bestOfPacks.score ? new Set([best]) : bestOfPacks.set;
+  for (const result of fill) selected.add(result);
 
+  const toContextItem = (result: RetrievalResult): ContextItem => ({
+    id: result.id,
+    content: result.content,
+    score: result.score,
+    metadata: result.metadata,
+  });
+
+  // Preserve reranked order in the delivered context. Group only contiguous same-source items;
+  // globally collecting every source into one section would silently move lower-ranked items in
+  // front of stronger evidence from another plane.
+  const sections: ContextSection[] = [];
   for (const result of results) {
     if (!selected.has(result)) continue;
-
-    const key = result.source_type;
-    if (!groups.has(key)) {
-      groups.set(key, { heading: headingMap[key] ?? key, items: [] });
+    const previous = sections[sections.length - 1];
+    if (previous?.source_type === result.source_type) {
+      previous.items.push(toContextItem(result));
+    } else {
+      sections.push({
+        heading: headingMap[result.source_type] ?? result.source_type,
+        source_type: result.source_type,
+        items: [toContextItem(result)],
+      });
     }
-    groups.get(key)!.items.push({
-      id: result.id,
-      content: result.content,
-      score: result.score,
-      metadata: result.metadata,
-    });
   }
-
-  return [...groups.entries()].map(([key, group]) => ({
-    heading: group.heading,
-    source_type: key as ContextSection['source_type'],
-    items: group.items,
-  }));
+  return sections;
 }

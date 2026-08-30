@@ -158,15 +158,10 @@ function memoryRows(count: number): Array<[string, string]> {
 }
 /** The candidate channel's `maxCandidatesAggregate`. */
 const WIDE_MEMORY = memoryRows(128);
-// MEASURED CEILING (verified at d1f4c20, code absent): a TRACED served execution stays
-// valid only up to ~28 fused candidates. At 30 the MMR pairwise budget
-// (DEFAULT_LIMITS.maxMmrPairwiseTotal = 4096, trace.ts:37) is exceeded, the adapter's
-// `safe()` latches `failed`, `recordReranker` returns without recording, and `finalize()`
-// throws `trace reranker stage count disagrees with algorithm`. So a 128-row memory
-// execution CANNOT produce an observable trace at all — with or without code. Pin 3 is
-// therefore split: 3a observes the fusion input inside the traced ceiling, 3b makes the
-// spec's full 128-row status/bound claims untraced.
-const NARROW_MEMORY = memoryRows(6);
+// 30 memory + 20 code exercises the complete 50-item served MMR window. Its trace contains
+// C(51, 3) = 20,825 pairwise observations, so this is the regression pin for the former 4,096
+// collector ceiling that silently erased the reranker stage.
+const FULL_MMR_MEMORY = memoryRows(30);
 
 function symbolItems(context: UnifiedContext) {
   return context.sections
@@ -224,9 +219,9 @@ describe('COD-010b served candidate arm serves code', () => {
     const { codeLayer } = makeCodeLayer(codeRows(20));
     const assembler = makeAssembler(codeLayer);
 
-    // 6 memory + 20 code = 26 fused candidates, inside the measured traced ceiling above.
+    // 30 memory + 20 code fills the served fusion window exactly.
     const served = await servedCall(assembler)(
-      TASK, execution(NARROW_MEMORY), 8_000, false, true, true, undefined, { includeCode: true },
+      TASK, execution(FULL_MMR_MEMORY), 8_000, false, true, true, undefined, { includeCode: true },
     );
 
     // The trace adapter is CONSTRUCTED with `lists` (assembler.ts:615) and snapshots its
@@ -236,7 +231,7 @@ describe('COD-010b served candidate arm serves code', () => {
       candidate.channels.some((channel) => channel.channel === 'code.fulltext'));
     expect(codeCandidates).toHaveLength(20);
     expect(served.trace!.incompleteReasons).toEqual([]);
-  });
+  }, 15_000);
 
   it("pin 3b(c'): on a full 128-row memory execution the status is never unavailable and deduped stays <= 50", async () => {
     const { codeLayer } = makeCodeLayer(codeRows(20));
@@ -254,10 +249,12 @@ describe('COD-010b served candidate arm serves code', () => {
     } as ServedRerankerConstructionV1;
     const assembler = makeAssembler(codeLayer, spy);
 
-    // Untraced: 148 fused candidates cannot produce a valid trace today (see NARROW_MEMORY).
     const served = await servedCall(assembler)(
-      TASK, execution(WIDE_MEMORY), 8_000, false, true, false, undefined, { includeCode: true },
+      TASK, execution(WIDE_MEMORY), 8_000, false, true, true, undefined, { includeCode: true },
     );
+    expect(served.trace!.events).toContainEqual(expect.objectContaining({
+      kind: 'reranker-stage', outcome: 'reranked',
+    }));
 
     // (b) the rendered status is derived from the FINAL sections — never `unavailable`.
     const rendered = assembler.renderMarkdown(served.context);
@@ -273,7 +270,7 @@ describe('COD-010b served candidate arm serves code', () => {
     // instead of silently disabling the reranker via the 128-candidate cliff.
     expect(rerankerRequests).toHaveLength(1);
     expect(rerankerRequests[0]!.candidates.length).toBeLessThanOrEqual(50);
-  });
+  }, 30_000);
 
   it('pin 4: the trace declares sources.code, carries the code candidates, and reports NO incomplete reasons', async () => {
     const { codeLayer } = makeCodeLayer(codeRows(3));

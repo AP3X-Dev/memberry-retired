@@ -51,6 +51,7 @@ import {
 
 export interface IUnifiedAssembler {
   readonly servedRerankerEnabled?: boolean;
+  candidateQueryVector?(task: string): Promise<number[] | undefined>;
   assemble(task: string, options?: {
     strategy?: RetrievalStrategy;
     include_code?: boolean;
@@ -598,6 +599,15 @@ export function registerRetrievalTools(
       // RL-018: an unanchored request cannot enter the candidate channel — it is pinned to one
       // resolved entity by construction. Fall through to the task-text path rather than reject.
       if (candidateChannelEnabled && anchored) {
+        const servedCandidate = assembler.servedRerankerEnabled === true
+          && args.strategy !== 'deterministic';
+        if (!candidateRuntime || !assembler.assembleCandidateExecution
+          || (servedCandidate && !assembler.assembleCandidateExecutionServed)) {
+          throw new Error('candidate_runtime:unavailable');
+        }
+        const queryVectorPromise = args.include_memory && assembler.candidateQueryVector
+          ? assembler.candidateQueryVector(args.task)
+          : Promise.resolve(undefined);
         const receipt = await observeRetrievalResolutionV1(() => resolveRuntimeQueryPlannerAuthorityV1({
           authenticated,
           plannerEnabled: queryPlannerEnabled,
@@ -607,13 +617,12 @@ export function registerRetrievalTools(
           entityScope: args.entity_scope,
           ...(args.as_of !== undefined ? { asOf: args.as_of } : {}),
         }));
-        const servedCandidate = assembler.servedRerankerEnabled === true
-          && args.strategy !== 'deterministic';
-        if (!candidateRuntime || !assembler.assembleCandidateExecution
-          || (servedCandidate && !assembler.assembleCandidateExecutionServed)) {
-          throw new Error('candidate_runtime:unavailable');
-        }
-        const executeOptions = { includeArchitecture: args.include_arch, includeMemory: args.include_memory };
+        const queryVector = await queryVectorPromise;
+        const executeOptions: RuntimeCandidateExecuteOptions = {
+          includeArchitecture: args.include_arch,
+          includeMemory: args.include_memory,
+          ...(queryVector !== undefined ? { queryVector } : {}),
+        };
         const execution = await candidateRuntime.execute(receipt, executeOptions);
         const shadowObserver = servedCandidate || args.strategy === 'deterministic'
           ? undefined
@@ -736,6 +745,14 @@ export function registerRetrievalTools(
       assertPlannerAuthenticationObserved(candidateChannelEnabled, queryPlannerEnabled, authenticated);
       // RL-018: same routing as berry_context — berry_ask shares the constraint verbatim.
       if (candidateChannelEnabled && anchored) {
+        const servedCandidate = assembler.servedRerankerEnabled === true;
+        if (!candidateRuntime || !assembler.askFromContext || !assembler.assembleCandidateExecution
+          || (servedCandidate && !assembler.assembleCandidateExecutionServed)) {
+          throw new Error('candidate_runtime:unavailable');
+        }
+        const queryVectorPromise = assembler.candidateQueryVector
+          ? assembler.candidateQueryVector(args.question)
+          : Promise.resolve(undefined);
         const receipt = await observeRetrievalResolutionV1(() => resolveRuntimeQueryPlannerAuthorityV1({
           authenticated,
           plannerEnabled: queryPlannerEnabled,
@@ -745,12 +762,12 @@ export function registerRetrievalTools(
           entityScope: args.entity_scope,
           ...(args.as_of !== undefined ? { asOf: args.as_of } : {}),
         }));
-        const servedCandidate = assembler.servedRerankerEnabled === true;
-        if (!candidateRuntime || !assembler.askFromContext || !assembler.assembleCandidateExecution
-          || (servedCandidate && !assembler.assembleCandidateExecutionServed)) {
-          throw new Error('candidate_runtime:unavailable');
-        }
-        const executeOptions = { includeArchitecture: true, includeMemory: true };
+        const queryVector = await queryVectorPromise;
+        const executeOptions: RuntimeCandidateExecuteOptions = {
+          includeArchitecture: true,
+          includeMemory: true,
+          ...(queryVector !== undefined ? { queryVector } : {}),
+        };
         const execution = await candidateRuntime.execute(receipt, executeOptions);
         const shadowObserver = servedCandidate
           ? undefined

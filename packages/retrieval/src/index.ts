@@ -12,6 +12,7 @@ export type {
   FeedbackSignal,
   BoostFactors,
 } from './types.js';
+export { RETRIEVAL_SOURCE_TYPES } from './types.js';
 
 // Query expansion
 export { expandQuery } from './expand.js';

@@ -1,7 +1,7 @@
 import neo4j, { Record as Neo4jRecord, type Driver } from 'neo4j-driver';
 import { types as nodeUtilTypes } from 'node:util';
 import { FactStore } from '@memberry/neo4j';
-import type { FactNode } from '@memberry/core';
+import { EMBEDDING_DIM, type FactNode } from '@memberry/core';
 
 import {
   CANDIDATE_CHANNEL_CONTRACT_ID,
@@ -61,6 +61,7 @@ export interface RuntimeCandidateDriver {
 export interface RuntimeCandidateExecuteOptions {
   readonly includeArchitecture: boolean;
   readonly includeMemory: boolean;
+  readonly queryVector?: readonly number[];
 }
 
 interface ReceiptState {
@@ -71,9 +72,12 @@ interface ReceiptState {
 }
 
 interface SourceSpec {
-  readonly channel: 'memory.scope' | 'memory.block' | 'arch.entity';
-  readonly sourceType: 'semantic' | 'block' | 'arch_entity';
+  readonly channel:
+    | 'memory.scope' | 'memory.semantic-vector' | 'memory.episodic-vector'
+    | 'memory.block' | 'arch.entity';
+  readonly sourceType: 'semantic' | 'episodic' | 'block' | 'arch_entity';
   readonly query: string;
+  readonly requiresVector?: true;
 }
 
 class SourceFailure extends Error {
@@ -109,17 +113,69 @@ ORDER BY score DESC, evidenceId ASC
 LIMIT $rowLimit`;
 
 const SCOPE_QUERY = `${PROJECT_PROOF}
-MATCH (s:Semantic)-[r:ABOUT]->(target)
+MATCH (s:Semantic)
 WHERE (s.tenant_id = $tenantId OR (s.tenant_id IS NULL AND $tenantId = $defaultTenant))
   AND (s.scope = $projectScope OR $projectScope IN coalesce(s.tags, []))
   AND coalesce(s.archived, false) = false
-  AND (($asOf IS NULL AND r.invalid_at IS NULL)
+OPTIONAL MATCH (s)-[r:ABOUT]->(target)
+WITH root, target, s, r
+WHERE (r IS NOT NULL AND (($asOf IS NULL AND r.invalid_at IS NULL)
     OR ($asOf IS NOT NULL AND coalesce(r.valid_at, '1970-01-01T00:00:00.000Z') <= $asOf
-      AND (r.invalid_at IS NULL OR r.invalid_at > $asOf)))
+      AND (r.invalid_at IS NULL OR r.invalid_at > $asOf))))
+  OR (r IS NULL AND target = root
+    AND (($asOf IS NULL AND s.invalid_at IS NULL)
+      OR ($asOf IS NOT NULL
+        AND coalesce(s.valid_at, s.created_at, '1970-01-01T00:00:00.000Z') <= $asOf
+        AND (s.invalid_at IS NULL OR s.invalid_at > $asOf))))
 WITH DISTINCT root, target, s.id AS evidenceId,
      coalesce(s.memory_type, 'Semantic') AS title,
      s.content AS content,
      coalesce(s.confidence, 0.0) AS score
+${COMMON_RETURN}`;
+
+// The project proof and target relationship are evaluated before similarity. This deliberately
+// avoids the unsafe shape used by the legacy global vector reader (global top-K followed by
+// authorization filtering), where foreign neighbours can starve valid in-scope evidence.
+const SEMANTIC_VECTOR_QUERY = `${PROJECT_PROOF}
+MATCH (s:Semantic)
+WHERE (s.tenant_id = $tenantId OR (s.tenant_id IS NULL AND $tenantId = $defaultTenant))
+  AND (s.scope = $projectScope OR $projectScope IN coalesce(s.tags, []))
+  AND coalesce(s.archived, false) = false
+  AND s.embedding IS NOT NULL
+OPTIONAL MATCH (s)-[r:ABOUT]->(target)
+WITH root, target, s, r
+WHERE (r IS NOT NULL AND (($asOf IS NULL AND r.invalid_at IS NULL)
+    OR ($asOf IS NOT NULL AND coalesce(r.valid_at, '1970-01-01T00:00:00.000Z') <= $asOf
+      AND (r.invalid_at IS NULL OR r.invalid_at > $asOf))))
+  OR (r IS NULL AND target = root
+    AND (($asOf IS NULL AND s.invalid_at IS NULL)
+      OR ($asOf IS NOT NULL
+        AND coalesce(s.valid_at, s.created_at, '1970-01-01T00:00:00.000Z') <= $asOf
+        AND (s.invalid_at IS NULL OR s.invalid_at > $asOf))))
+WITH DISTINCT root, target, s, vector.similarity.cosine(s.embedding, $queryVector) AS score
+WHERE score IS NOT NULL
+WITH root, target, s.id AS evidenceId,
+     coalesce(s.memory_type, 'Semantic') AS title,
+     s.content AS content,
+     score
+${COMMON_RETURN}`;
+
+const EPISODIC_VECTOR_QUERY = `${PROJECT_PROOF}
+MATCH (ep:Episodic)-[r:REFERENCES]->(target)
+WHERE (ep.tenant_id = $tenantId OR (ep.tenant_id IS NULL AND $tenantId = $defaultTenant))
+  AND (ep.scope = $projectScope OR $projectScope IN coalesce(ep.tags, []))
+  AND coalesce(ep.archived, false) = false
+  AND ep.embedding IS NOT NULL
+  AND coalesce(ep.content, '') <> ''
+  AND (($asOf IS NULL AND r.invalid_at IS NULL)
+    OR ($asOf IS NOT NULL AND coalesce(r.valid_at, '1970-01-01T00:00:00.000Z') <= $asOf
+      AND (r.invalid_at IS NULL OR r.invalid_at > $asOf)))
+WITH DISTINCT root, target, ep, vector.similarity.cosine(ep.embedding, $queryVector) AS score
+WHERE score IS NOT NULL
+WITH root, target, ep.id AS evidenceId,
+     coalesce(ep.memory_type, 'Episodic') AS title,
+     CASE WHEN coalesce(ep.task, '') = '' THEN ep.content ELSE ep.task + '\n\n' + ep.content END AS content,
+     score
 ${COMMON_RETURN}`;
 
 const ARCH_QUERY = `${PROJECT_PROOF}
@@ -148,9 +204,34 @@ ${COMMON_RETURN}`;
 
 const SOURCES: readonly SourceSpec[] = FREEZE([
   FREEZE({ channel: 'memory.scope', sourceType: 'semantic', query: SCOPE_QUERY }),
+  FREEZE({
+    channel: 'memory.semantic-vector', sourceType: 'semantic', query: SEMANTIC_VECTOR_QUERY,
+    requiresVector: true,
+  }),
+  FREEZE({
+    channel: 'memory.episodic-vector', sourceType: 'episodic', query: EPISODIC_VECTOR_QUERY,
+    requiresVector: true,
+  }),
   FREEZE({ channel: 'memory.block', sourceType: 'block', query: BLOCK_QUERY }),
   FREEZE({ channel: 'arch.entity', sourceType: 'arch_entity', query: ARCH_QUERY }),
 ]);
+
+function snapshotQueryVector(input: readonly number[] | undefined): readonly number[] | undefined {
+  if (input === undefined) return undefined;
+  if (IS_PROXY(input) || !ARRAY_IS_ARRAY(input) || GET_PROTOTYPE(input) !== ARRAY_PROTOTYPE
+    || input.length !== EMBEDDING_DIM || OWN_KEYS(input).length !== input.length + 1) {
+    throw new Error('candidate_runtime:invalid_query_vector');
+  }
+  const snapshot: number[] = [];
+  for (let index = 0; index < input.length; index += 1) {
+    const value = ownData(input, String(index));
+    if (typeof value !== 'number' || !IS_FINITE(value) || OBJECT_IS(value, -0)) {
+      throw new Error('candidate_runtime:invalid_query_vector');
+    }
+    snapshot[index] = value;
+  }
+  return FREEZE(snapshot);
+}
 
 function ownData(input: object, key: PropertyKey): unknown {
   const descriptor = GET_DESCRIPTOR(input, key);
@@ -211,6 +292,8 @@ function parseRecord(input: unknown, state: ReceiptState, spec: SourceSpec, rank
     : FREEZE({ mode: 'as-of' as const, asOf: state.asOf });
   const provenance = spec.sourceType === 'semantic'
     ? FREEZE({ kind: 'semantic' as const, semanticId: evidenceId })
+    : spec.sourceType === 'episodic'
+      ? FREEZE({ kind: 'episodic' as const, episodeId: evidenceId })
     : spec.sourceType === 'block'
       ? FREEZE({ kind: 'block' as const, blockId: evidenceId })
       : FREEZE({ kind: 'arch_entity' as const, entityId: evidenceId });
@@ -330,6 +413,7 @@ export class RuntimeCandidateChannelService {
     receipt: RuntimeQueryPlannerResolvedReceiptV1,
     options: RuntimeCandidateExecuteOptions,
   ): Promise<CandidateChannelExecutionResultV1> {
+    const queryVector = snapshotQueryVector(options.queryVector);
     let authority: ReturnType<typeof readRuntimeQueryPlannerAuthorityV1>;
     try { authority = readRuntimeQueryPlannerAuthorityV1(receipt); }
     catch { throw new Error('candidate_runtime:invalid_receipt'); }
@@ -348,16 +432,19 @@ export class RuntimeCandidateChannelService {
       resolvedEntityIds: Object.freeze([state.resolvedEntityId]),
       temporalFrame,
       plannedChannels: RETRIEVAL_TRACE_CHANNEL_ORDER,
-      // Four real channels can now each contribute up to the sealed per-channel cap. Keep the
-      // aggregate within the contract's 512 hard ceiling so a full earlier channel cannot evict a
-      // valid later MemoryBlock or architecture settlement merely because it runs later.
-      limits: Object.freeze({ maxCandidatesPerChannel: MAX_ROWS, maxCandidatesAggregate: 256 }),
+      // Six served memory/architecture channels can each contribute up to the sealed per-channel
+      // cap. Keep the aggregate within the contract's 512 hard ceiling so a full earlier channel
+      // cannot evict a valid later MemoryBlock or architecture settlement merely because it runs
+      // later.
+      limits: Object.freeze({ maxCandidatesPerChannel: MAX_ROWS, maxCandidatesAggregate: 384 }),
     });
     const roster: Array<CandidateChannelRunnerRosterV1[number]> = [];
     for (const channel of RETRIEVAL_TRACE_CHANNEL_ORDER) {
       const spec = SOURCES.find((item) => item.channel === channel);
       const isFact = channel === 'memory.fact';
-      const enabled = (spec || isFact) && (channel === 'arch.entity' ? options.includeArchitecture : options.includeMemory);
+      const enabled = (spec || isFact)
+        && (!spec?.requiresVector || queryVector !== undefined)
+        && (channel === 'arch.entity' ? options.includeArchitecture : options.includeMemory);
       if ((!spec && !isFact) || !enabled) {
         roster.push(Object.freeze({ channel, run: () => failure(channel, 'unavailable') }));
         continue;
@@ -388,7 +475,11 @@ export class RuntimeCandidateChannelService {
                 projectScope: state.projectScope,
                 entityId: state.resolvedEntityId,
                 asOf: state.asOf ?? null,
-                rowLimit: neo4j.int(MAX_ROWS + 1),
+                // The sealed contract caps every channel at MAX_ROWS. Bound the database query
+                // at that cap instead of requesting N+1 and discarding the entire channel when
+                // additional authorized rows exist.
+                rowLimit: neo4j.int(MAX_ROWS),
+                ...(spec!.requiresVector ? { queryVector } : {}),
               }), QUERY_TIMEOUT_MS);
               candidates = parseRows(raw, state, spec!);
               await bounded(tx.commit(), CLOSE_TIMEOUT_MS);

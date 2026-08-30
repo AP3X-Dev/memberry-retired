@@ -2,6 +2,7 @@ import { createHash } from 'node:crypto';
 import { types as nodeUtilTypes } from 'node:util';
 
 import type { RetrievalTraceSourceType } from './trace.js';
+import { RETRIEVAL_SOURCE_TYPES } from './types.js';
 
 const JSON_PARSE = JSON.parse;
 const JSON_STRINGIFY = JSON.stringify;
@@ -100,9 +101,6 @@ export const RERANKER_DEFAULT_TIMEOUT_MS = 250 as const;
 export const RERANKER_MAX_TIMEOUT_MS = 2_000 as const;
 export const RERANKER_BASELINE_REASON = 'not-reranked' as const;
 
-const SOURCE_TYPES = OBJECT_FREEZE([
-  'semantic', 'episodic', 'symbol', 'arch_entity', 'aspect', 'fact', 'block',
-] as const);
 const SAFE_PROVIDER_IDENTITY = /^[A-Za-z0-9][A-Za-z0-9._:@/+~-]*$/;
 const MAX_SERIALIZED_PROVIDER_REQUEST_BYTES =
   (RERANKER_MAX_AGGREGATE_STRING_BYTES * 6) + (RERANKER_MAX_CANDIDATES * 256);
@@ -360,7 +358,7 @@ function identityString(input: unknown): string {
 }
 
 function sourceType(input: unknown): RetrievalTraceSourceType {
-  if (typeof input !== 'string' || !ARRAY_INCLUDES(SOURCE_TYPES, input)) {
+  if (typeof input !== 'string' || !ARRAY_INCLUDES(RETRIEVAL_SOURCE_TYPES, input)) {
     throw new Error('invalid-source-type');
   }
   return input as RetrievalTraceSourceType;

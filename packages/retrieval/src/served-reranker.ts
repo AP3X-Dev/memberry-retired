@@ -1,4 +1,5 @@
 import { types as nodeUtilTypes } from 'node:util';
+import { Buffer } from 'node:buffer';
 
 import {
   RERANKER_BASELINE_REASON,
@@ -10,7 +11,7 @@ import {
   type RerankerProviderIdentityV1,
   type RerankerProviderV1,
 } from './reranker.js';
-import type { RetrievalResult, SourceType } from './types.js';
+import { RETRIEVAL_SOURCE_TYPES, type RetrievalResult, type SourceType } from './types.js';
 
 const ARRAY = Array;
 const ARRAY_IS_ARRAY = Array.isArray;
@@ -18,6 +19,7 @@ const ARRAY_PROTOTYPE = Array.prototype;
 const ARRAY_INCLUDES = Function.prototype.call.bind(Array.prototype.includes) as <T>(
   input: readonly T[], value: T,
 ) => boolean;
+const BUFFER_BYTE_LENGTH = Buffer.byteLength;
 const OBJECT_CREATE = Object.create;
 const OBJECT_DEFINE_PROPERTY = Object.defineProperty;
 const OBJECT_FREEZE = Object.freeze;
@@ -36,7 +38,13 @@ const MATH_MAX = Math.max;
 const MATH_MIN = Math.min;
 const MATH_ROUND = Math.round;
 const STRING = String;
+const STRING_CHAR_CODE_AT = Function.prototype.call.bind(String.prototype.charCodeAt) as (
+  input: string, index: number,
+) => number;
 const STRING_NORMALIZE = String.prototype.normalize;
+const STRING_SLICE = Function.prototype.call.bind(String.prototype.slice) as (
+  input: string, start: number, end?: number,
+) => string;
 const STRING_TO_LOWER_CASE = String.prototype.toLowerCase;
 const REGEXP_SPLIT = RegExp.prototype[Symbol.split];
 const SPLIT_PATTERN = /[^a-z0-9]+/;
@@ -47,6 +55,12 @@ const SET_ADD = Function.prototype.call.bind(Set.prototype.add) as <T>(set: Set<
 const QUERY_TOKEN_LIMIT = 64;
 const TITLE_TOKEN_LIMIT = 128;
 const CONTENT_TOKEN_LIMIT = 2048;
+// The served fusion window is 50 candidates and the provider request has a sealed 256 KiB
+// aggregate envelope. A 1,000-code-unit prefix keeps that full window feasible even for four-byte
+// Unicode while retaining
+// the leading decision/task text that the scorer uses; returned evidence remains untruncated.
+const PROVIDER_CONTENT_CODE_UNITS = 1_000;
+const PROVIDER_COMPACTION_THRESHOLD_BYTES = 192 * 1024;
 const TOKEN_LENGTH_LIMIT = 32;
 const SCORE_SCALE = 1_000_000;
 const BM25_K_PLUS_ONE = 2.2;
@@ -60,10 +74,13 @@ const BASELINE_WEIGHT = 0.15;
 const LEXICAL_WEIGHT = 0.65;
 const COVERAGE_WEIGHT = 0.15;
 const PHRASE_WEIGHT = 0.05;
+const MEMORY_PLANE_HEAD_FLOOR = 0.800001;
+const MEMORY_PLANE_REMAINDER_CEILING = 0.799999;
 
-const SOURCE_TYPES: readonly SourceType[] = OBJECT_FREEZE([
-  'semantic', 'episodic', 'symbol', 'arch_entity', 'aspect', 'fact',
+const CORE_MEMORY_SOURCE_TYPES: readonly SourceType[] = OBJECT_FREEZE([
+  'semantic', 'episodic', 'fact', 'block',
 ]);
+
 const STOPWORDS: readonly string[] = OBJECT_FREEZE([
   'a', 'an', 'and', 'are', 'as', 'at', 'be', 'by', 'for', 'from', 'has', 'have',
   'how', 'in', 'is', 'it', 'of', 'on', 'or', 'that', 'the', 'this', 'to', 'was',
@@ -144,8 +161,8 @@ function isAllowedRecord(value: unknown): value is Record<string, unknown> {
 
 function sourceType(value: unknown): SourceType {
   if (typeof value !== 'string') throw new Error('invalid-source-type');
-  for (let index = 0; index < SOURCE_TYPES.length; index += 1) {
-    if (SOURCE_TYPES[index] === value) return value as SourceType;
+  for (let index = 0; index < RETRIEVAL_SOURCE_TYPES.length; index += 1) {
+    if (RETRIEVAL_SOURCE_TYPES[index] === value) return value as SourceType;
   }
   throw new Error('invalid-source-type');
 }
@@ -258,6 +275,13 @@ function containsSequence(tokens: readonly string[], query: readonly string[]): 
   return false;
 }
 
+function isCoreMemorySource(value: SourceType): boolean {
+  for (let index = 0; index < CORE_MEMORY_SOURCE_TYPES.length; index += 1) {
+    if (CORE_MEMORY_SOURCE_TYPES[index] === value) return true;
+  }
+  return false;
+}
+
 function finite(value: number): number {
   if (!NUMBER_IS_FINITE(value)) throw new Error('non-finite-score');
   return value;
@@ -265,6 +289,14 @@ function finite(value: number): number {
 
 function clamp(value: number): number {
   return MATH_MIN(1, MATH_MAX(0, value));
+}
+
+function providerContent(input: string): string {
+  if (input.length <= PROVIDER_CONTENT_CODE_UNITS) return input;
+  let end = PROVIDER_CONTENT_CODE_UNITS;
+  const last = STRING_CHAR_CODE_AT(input, end - 1);
+  if (last >= 0xD800 && last <= 0xDBFF) end -= 1;
+  return STRING_SLICE(input, 0, end);
 }
 
 function bm25(tf: number, length: number, average: number, b: number): number {
@@ -280,6 +312,7 @@ interface TokenizedCandidate {
 }
 
 function scoreBatch(query: string, candidates: readonly {
+  readonly sourceType: SourceType;
   readonly title: string;
   readonly content: string;
   readonly baselineScore: number;
@@ -300,6 +333,16 @@ function scoreBatch(query: string, candidates: readonly {
   }
   const averageTitle = finite(titleTotal / candidates.length);
   const averageContent = finite(contentTotal / candidates.length);
+  const documentFrequencies = createDenseArray<number>(uniqueQuery.length);
+  for (let queryIndex = 0; queryIndex < uniqueQuery.length; queryIndex += 1) {
+    const token = uniqueQuery[queryIndex]!;
+    let frequency = 0;
+    for (let documentIndex = 0; documentIndex < tokenized.length; documentIndex += 1) {
+      const document = tokenized[documentIndex]!;
+      if (containsToken(document.title, token) || containsToken(document.content, token)) frequency += 1;
+    }
+    defineArrayItem(documentFrequencies, queryIndex, frequency);
+  }
   const scores = createDenseArray<number>(candidates.length);
   for (let candidateIndex = 0; candidateIndex < tokenized.length; candidateIndex += 1) {
     const candidate = tokenized[candidateIndex]!;
@@ -307,11 +350,7 @@ function scoreBatch(query: string, candidates: readonly {
     let matched = 0;
     for (let queryIndex = 0; queryIndex < uniqueQuery.length; queryIndex += 1) {
       const token = uniqueQuery[queryIndex]!;
-      let df = 0;
-      for (let documentIndex = 0; documentIndex < tokenized.length; documentIndex += 1) {
-        const document = tokenized[documentIndex]!;
-        if (containsToken(document.title, token) || containsToken(document.content, token)) df += 1;
-      }
+      const df = documentFrequencies[queryIndex]!;
       const titleTf = termFrequency(candidate.title, token);
       const contentTf = termFrequency(candidate.content, token);
       if (titleTf > 0 || contentTf > 0) matched += 1;
@@ -333,6 +372,36 @@ function scoreBatch(query: string, candidates: readonly {
     ));
     const rounded = MATH_ROUND(blended * SCORE_SCALE) / SCORE_SCALE;
     defineArrayItem(scores, candidateIndex, OBJECT_IS(rounded, -0) ? 0 : rounded);
+  }
+  // A memory-only context should not let many same-plane hits erase every other memory plane
+  // from the first five items an agent sees. Preserve lexical order within each plane, promote
+  // only that plane's strongest candidate, and leave mixed code/architecture batches untouched.
+  let coreMemoryOnly = candidates.length > 0;
+  const planeHeads = createDenseArray<number | undefined>(CORE_MEMORY_SOURCE_TYPES.length);
+  for (let index = 0; index < planeHeads.length; index += 1) defineArrayItem(planeHeads, index, undefined);
+  let planeCount = 0;
+  for (let index = 0; index < candidates.length; index += 1) {
+    const type = candidates[index]!.sourceType;
+    if (!isCoreMemorySource(type)) { coreMemoryOnly = false; break; }
+    let planeIndex = 0;
+    while (CORE_MEMORY_SOURCE_TYPES[planeIndex] !== type) planeIndex += 1;
+    const previous = planeHeads[planeIndex];
+    if (previous === undefined) planeCount += 1;
+    if (previous === undefined || scores[index]! > scores[previous]!) planeHeads[planeIndex] = index;
+  }
+  if (coreMemoryOnly && planeCount > 1) {
+    const heads = new SET<number>();
+    for (let index = 0; index < planeHeads.length; index += 1) {
+      if (planeHeads[index] !== undefined) SET_ADD(heads, planeHeads[index]!);
+    }
+    for (let index = 0; index < scores.length; index += 1) {
+      const raw = scores[index]!;
+      const calibrated = SET_HAS(heads, index)
+        ? MEMORY_PLANE_HEAD_FLOOR + (1 - MEMORY_PLANE_HEAD_FLOOR) * raw
+        : MEMORY_PLANE_REMAINDER_CEILING * raw;
+      const rounded = MATH_ROUND(calibrated * SCORE_SCALE) / SCORE_SCALE;
+      scores[index] = OBJECT_IS(rounded, -0) ? 0 : rounded;
+    }
   }
   return OBJECT_FREEZE(scores);
 }
@@ -391,6 +460,12 @@ export async function applyServedRerankerV1(
     if (!isAllowedRecord(providerIdentity) || typeof providerRun !== 'function' || NODE_IS_PROXY(providerRun)
       || !identityMatches(providerIdentity as unknown as RerankerProviderIdentityV1)) return baseline(results);
     snapshots = snapshotResults(results);
+    let providerBytes = BUFFER_BYTE_LENGTH(query, 'utf8');
+    for (let index = 0; index < snapshots.length; index += 1) {
+      providerBytes += BUFFER_BYTE_LENGTH(snapshots[index]!.title, 'utf8');
+      providerBytes += BUFFER_BYTE_LENGTH(snapshots[index]!.content, 'utf8');
+    }
+    const compactProviderText = providerBytes > PROVIDER_COMPACTION_THRESHOLD_BYTES;
     const candidates = createDenseArray<{
       value: SafeResult; sourceType: SourceType; title: string; content: string; baselineScore: number;
     }>(snapshots.length);
@@ -400,7 +475,7 @@ export async function applyServedRerankerV1(
         value: snapshot,
         sourceType: snapshot.source_type,
         title: snapshot.title,
-        content: snapshot.content,
+        content: compactProviderText ? providerContent(snapshot.content) : snapshot.content,
         baselineScore: snapshot.score,
       }));
     }

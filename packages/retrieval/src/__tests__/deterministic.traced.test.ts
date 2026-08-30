@@ -184,7 +184,7 @@ describe('UnifiedAssembler.assembleTraced deterministic runtime', () => {
     expect(JSON.stringify(traced.trace)).not.toContain(canary);
   });
 
-  it('bounds trace candidates without truncating returned deterministic context', async () => {
+  it('captures the full bounded deterministic context under the raised trace ceiling', async () => {
     const responses = entityResponses();
     responses[0] = result(Array.from({ length: 140 }, (_, index) => ({
       targetName: 'AuthService', name: `Ancestor${index}`, depth: index, responsibility: 'context',
@@ -194,9 +194,9 @@ describe('UnifiedAssembler.assembleTraced deterministic runtime', () => {
     });
 
     expect(traced.context.sections[0]?.items).toHaveLength(140);
-    expect(traced.trace.candidates.length).toBeLessThanOrEqual(128);
-    expect(traced.trace.complete).toBe(false);
-    expect(traced.trace.incompleteReasons).toContain('limit-overflow');
+    expect(traced.trace.candidates).toHaveLength(141);
+    expect(traced.trace.complete).toBe(true);
+    expect(traced.trace.incompleteReasons).not.toContain('limit-overflow');
   });
 
   it('matches semantic temporal query truth for empty and valid as_of values', async () => {

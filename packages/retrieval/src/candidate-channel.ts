@@ -5,6 +5,7 @@ import {
   type RetrievalTraceChannel,
   type RetrievalTraceSourceType,
 } from './trace.js';
+import { RETRIEVAL_SOURCE_TYPES } from './types.js';
 
 const INTRINSIC_JSON_PARSE = JSON.parse;
 const INTRINSIC_JSON_STRINGIFY = JSON.stringify;
@@ -120,9 +121,7 @@ const SAFE_TENANT_ID = /^[A-Za-z0-9][A-Za-z0-9._-]*$/;
 const SAFE_ENTITY_ID = /^[A-Za-z0-9][A-Za-z0-9._:-]*$/;
 const CANONICAL_PROJECT_SCOPE = /^project:[a-z0-9][a-z0-9._-]*$/;
 const SAFE_EVIDENCE_ID = /^[A-Za-z0-9][A-Za-z0-9._:@/+~-]*$/;
-const SOURCE_TYPES = INTRINSIC_OBJECT_FREEZE([
-  'semantic', 'episodic', 'symbol', 'arch_entity', 'aspect', 'fact', 'block',
-] as const);
+const SOURCE_TYPES = RETRIEVAL_SOURCE_TYPES;
 const EXPLICIT_FAILURE_CODES = INTRINSIC_OBJECT_FREEZE([
   'unavailable', 'timeout', 'query-failed',
 ] as const);

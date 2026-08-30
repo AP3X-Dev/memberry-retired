@@ -589,6 +589,22 @@ describe('RET-003B candidate-channel runtime wiring', () => {
     expect(rerankerShadowCoordinator!.trySchedule).not.toHaveBeenCalled();
   });
 
+  it('passes the assembler query vector only to memory-enabled anchored candidate execution', async () => {
+    const { assembler, candidateRuntime, container } = candidateContainer({ served: true });
+    const queryVector = [0.25, 0.75];
+    assembler.candidateQueryVector = vi.fn().mockResolvedValue(queryVector);
+    const { server, handlers } = makeServerStub();
+    registerRetrievalTools(server as never, container);
+    await handlers.get('berry_context')!({
+      task: 'vector query', strategy: 'ranked', project_name: 'project:memberry', entity_scope: ['Resolver'],
+      include_arch: false, include_memory: true,
+    });
+    expect(assembler.candidateQueryVector).toHaveBeenCalledWith('vector query');
+    expect(candidateRuntime.execute).toHaveBeenCalledWith(expect.anything(), {
+      includeArchitecture: false, includeMemory: true, queryVector,
+    });
+  });
+
   it('keeps deterministic candidate context on the synchronous v1 path with a served provider present', async () => {
     const { assembler, container } = candidateContainer({ served: true, shadow: true });
     const { server, handlers } = makeServerStub();
@@ -621,7 +637,7 @@ describe('RET-003B candidate-channel runtime wiring', () => {
       { zincrby: vi.fn(), zrevrangeWithScores: vi.fn(), lpush: vi.fn(), ltrim: vi.fn() },
       null,
       null,
-      { embed: vi.fn(), embedBatch: vi.fn() },
+      { available: false, embed: vi.fn(), embedBatch: vi.fn() },
       { available: true, chat, modelFor: vi.fn(() => 'test-model') },
       createServedRerankerProviderV1(),
     );

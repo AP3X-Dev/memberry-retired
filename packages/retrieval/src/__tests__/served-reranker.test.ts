@@ -28,6 +28,10 @@ function result(
   return { id, source_type: 'semantic', title, content, score, metadata };
 }
 
+function blockResult(id: string, score: number, title = '', content = ''): RetrievalResult {
+  return { id, source_type: 'block', title, content, score, metadata: {} };
+}
+
 function ids(outcome: ServedRerankerApplicationResultV1): string[] {
   return outcome.results.map((item) => item.id);
 }
@@ -90,6 +94,36 @@ describe('RET-010B frozen served reranker', () => {
     expect(ids(alpha)[0]).toBe('alpha');
     expect(ids(omega)[0]).toBe('omega');
     expect(ids(alpha)).not.toEqual(ids(omega));
+  });
+
+  it('reranks mixed batches containing a MemoryBlock instead of falling back wholesale', async () => {
+    const baseline = [
+      result('semantic-distractor', 1, 'unrelated roadmap'),
+      blockResult('block-match', 0.01, 'project state', 'memberry languages modules indexed files'),
+    ];
+    const outcome = await applyServedRerankerV1(
+      'memberry languages modules indexed files', baseline, createServedRerankerProviderV1(),
+    );
+    expect(outcome.outcome).toBe('reranked');
+    expect(ids(outcome)[0]).toBe('block-match');
+  });
+
+  it('reranks a full 50-item long-memory window without truncating returned evidence', async () => {
+    const baseline = Array.from({ length: 50 }, (_, index): RetrievalResult => ({
+      ...result(
+        `long-${index}`,
+        0.5,
+        `Long memory ${index}`,
+        `${index === 37 ? 'needle decision ' : ''}${'x'.repeat(10_000)}`,
+      ),
+      source_type: index % 2 === 0 ? 'semantic' : 'episodic',
+    }));
+    const outcome = await applyServedRerankerV1(
+      'needle decision', baseline, createServedRerankerProviderV1(),
+    );
+    expect(outcome.outcome).toBe('reranked');
+    expect(outcome.results[0]!.id).toBe('long-37');
+    expect(outcome.results[0]!.content).toHaveLength('needle decision '.length + 10_000);
   });
 
   it.each([
@@ -298,6 +332,33 @@ describe('RET-010B frozen served reranker', () => {
       expect(Math.round(item.score * 1_000_000) / 1_000_000).toBe(item.score);
       expect(Object.is(item.score, -0)).toBe(false);
     }
+  });
+
+  it('puts one head from each available memory plane in the first four for memory-only batches', async () => {
+    const baseline: RetrievalResult[] = [
+      ...Array.from({ length: 6 }, (_, index) => ({
+        ...result(`semantic-${index}`, 1 - index * 0.01, 'needle', 'needle'),
+      })),
+      { ...result('episode', 0, 'other', 'other'), source_type: 'episodic' },
+      { ...result('fact', 0, 'other', 'other'), source_type: 'fact' },
+      blockResult('block', 0, 'other', 'other'),
+    ];
+    const outcome = await applyServedRerankerV1('needle', baseline, createServedRerankerProviderV1());
+    expect(outcome.outcome).toBe('reranked');
+    expect(new Set(outcome.results.slice(0, 4).map((item) => item.source_type)))
+      .toEqual(new Set(['semantic', 'episodic', 'fact', 'block']));
+    expect(outcome.results.find((item) => item.source_type === 'semantic')?.id).toBe('semantic-0');
+  });
+
+  it('does not apply memory-plane coverage to mixed code batches', async () => {
+    const baseline: RetrievalResult[] = [
+      ...Array.from({ length: 6 }, (_, index) => result(`semantic-${index}`, 1, 'needle', 'needle')),
+      { ...result('episode', 0, 'other', 'other'), source_type: 'episodic' },
+      { ...result('symbol', 1, 'needle', 'needle'), source_type: 'symbol' },
+    ];
+    const outcome = await applyServedRerankerV1('needle', baseline, createServedRerankerProviderV1());
+    expect(outcome.outcome).toBe('reranked');
+    expect(outcome.results.slice(0, 5).some((item) => item.id === 'episode')).toBe(false);
   });
 
   it('maps deadline and late settlement to the exact baseline', async () => {

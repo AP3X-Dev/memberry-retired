@@ -51,8 +51,9 @@ export function createClient(base, token) {
   async function callTool(name, args) {
     const res = await rpc('tools/call', { name, arguments: args })
     const result = res?.result
-    const text = (result?.content ?? []).map((c) => c?.text ?? '').join('\n')
-    return { isError: result?.isError === true, text, raw: res }
+    const texts = (result?.content ?? []).map((c) => c?.text ?? '')
+    const text = texts.join('\n')
+    return { isError: result?.isError === true, text, texts, raw: res }
   }
 
   return {
