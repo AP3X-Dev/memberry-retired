@@ -291,6 +291,33 @@ function candidateShadowObserver(
   };
 }
 
+/**
+ * B-3 (2026-09-05). Live, every resolver-probe failure was `entity_not_found` — a hint that names
+ * no Entity (a symbol, a slug, a path), never an authority denial. Such a call is ordinary usage,
+ * so it degrades to the task-text path instead of failing, exactly as RL-018 does for an
+ * unanchored call. The invariant RL-018 states still holds: anchoring decides WHICH path answers,
+ * never WHETHER the caller may ask (authentication ran before the planner) and never WHICH
+ * validation applies (SAFE_ENTITY_HINT / RESERVED_AUTHORITY_HINT ran inside the planner before
+ * the resolver was consulted). Every other reason, and every structural failure, still throws.
+ * The resolution is still counted as failed; only the response degrades, and it says so.
+ */
+const ENTITY_NOT_FOUND_FALLBACK_NOTE = '**Entity scope:** unresolved (entity_not_found); answered from task text';
+
+async function entityNotFoundAsNull<T>(operation: () => Promise<T>): Promise<T | null> {
+  try {
+    return await operation();
+  } catch (error) {
+    if (error instanceof RuntimeQueryPlannerError && error.reason === 'entity_not_found') return null;
+    throw error;
+  }
+}
+
+function withFallbackNote<T extends { content: Array<{ type: 'text'; text: string }> }>(result: T, fallback: boolean): T {
+  if (!fallback) return result;
+  const [first, ...rest] = result.content;
+  return { ...result, content: [{ type: 'text' as const, text: `${ENTITY_NOT_FOUND_FALLBACK_NOTE}\n\n${first!.text}` }, ...rest] };
+}
+
 function fixedPlannerFailure(code: RuntimeQueryPlannerError['code']): RuntimeQueryPlannerError {
   return new RuntimeQueryPlannerError(code);
 }
@@ -658,6 +685,7 @@ export function registerRetrievalTools(
         throw new Error('Retrieval trace summary does not support explain');
       }
       const anchored = plannerAnchored(args);
+      let entityFallback = false;
       recordRetrievalCallV1(
         'berry_context',
         retrievalRoutingShape(anchored, candidateChannelEnabled || queryPlannerEnabled),
@@ -678,7 +706,7 @@ export function registerRetrievalTools(
         const queryVectorPromise = args.include_memory && assembler.candidateQueryVector
           ? assembler.candidateQueryVector(args.task)
           : Promise.resolve(undefined);
-        const receipt = await observeRetrievalResolutionV1(() => resolveRuntimeQueryPlannerAuthorityV1({
+        const receipt = await entityNotFoundAsNull(() => observeRetrievalResolutionV1(() => resolveRuntimeQueryPlannerAuthorityV1({
           authenticated,
           plannerEnabled: queryPlannerEnabled,
           resolverFactory,
@@ -686,8 +714,10 @@ export function registerRetrievalTools(
           projectName,
           entityScope: args.entity_scope,
           ...(args.as_of !== undefined ? { asOf: args.as_of } : {}),
-        }));
+        })));
         const queryVector = await queryVectorPromise;
+        if (receipt === null) entityFallback = true;
+        else {
         const executeOptions: RuntimeCandidateExecuteOptions = {
           includeArchitecture: args.include_arch,
           includeMemory: args.include_memory,
@@ -761,6 +791,7 @@ export function registerRetrievalTools(
           serializeApprovedRetrievalTrace(assembled.trace),
           renderRetrievalExplanationTextV1(buildRetrievalExplanationViewV1(assembled.trace)),
         );
+        }
       }
       // Tenant safety: the deterministic strategy queries un-tenant-stamped
       // Entity/Aspect nodes, so it is not safe for a named tenant. Force the
@@ -783,12 +814,13 @@ export function registerRetrievalTools(
       };
       // RL-018: `undefined` here is the already-supported task-text shape — the same value this
       // takes with the planner flag off. Only anchored requests pay for resolution.
-      const resolvedEntityIds = queryPlannerEnabled && anchored
-        ? await observeRetrievalResolutionV1(() => resolveRuntimeEntityIds(
+      const resolvedEntityIds = queryPlannerEnabled && anchored && !entityFallback
+        ? await entityNotFoundAsNull(() => observeRetrievalResolutionV1(() => resolveRuntimeEntityIds(
           authenticated, resolverFactory, tenantId, projectName, args.entity_scope, args.as_of,
-        ))
+        )))
         : undefined;
-      const runtimeOptions = resolvedEntityIds === undefined
+      if (resolvedEntityIds === null) entityFallback = true;
+      const runtimeOptions = resolvedEntityIds === undefined || resolvedEntityIds === null
         ? options
         : { ...options, resolvedEntityIds };
       // Keep the historical path byte/call/allocation-identical unless the
@@ -798,7 +830,7 @@ export function registerRetrievalTools(
         const ctx = await assembler.assemble(args.task, runtimeOptions);
         const md = assembler.renderMarkdown(ctx);
         if (summaryTraceRequested) {
-          return tracedTextContent(md, serializeRetrievalTraceSummaryV1(buildRetrievalTraceSummaryV1(
+          return withFallbackNote(tracedTextContent(md, serializeRetrievalTraceSummaryV1(buildRetrievalTraceSummaryV1(
             ctx,
             {
               strategy: ctx.strategy,
@@ -814,19 +846,19 @@ export function registerRetrievalTools(
               maxTokens: args.max_tokens,
             },
             performance.now() - requestStartedAt,
-          )));
+          ))), entityFallback);
         }
-        return textContent(md);
+        return withFallbackNote(textContent(md), entityFallback);
       }
       const traced = await assembler.assembleTraced(args.task, runtimeOptions);
       const md = assembler.renderMarkdown(traced.context);
       const traceJson = serializeApprovedRetrievalTrace(traced.trace);
-      if (args.explain !== true) return tracedTextContent(md, traceJson);
-      return tracedTextContent(
+      if (args.explain !== true) return withFallbackNote(tracedTextContent(md, traceJson), entityFallback);
+      return withFallbackNote(tracedTextContent(
         md,
         traceJson,
         renderRetrievalExplanationTextV1(buildRetrievalExplanationViewV1(traced.trace)),
-      );
+      ), entityFallback);
     },
   ));
 
@@ -847,6 +879,7 @@ export function registerRetrievalTools(
     async (args) => {
       if (!assembler) throw new Error('Retrieval services not initialised');
       const anchored = plannerAnchored(args);
+      let entityFallback = false;
       recordRetrievalCallV1(
         'berry_ask',
         retrievalRoutingShape(anchored, candidateChannelEnabled || queryPlannerEnabled),
@@ -865,7 +898,7 @@ export function registerRetrievalTools(
         const queryVectorPromise = assembler.candidateQueryVector
           ? assembler.candidateQueryVector(args.question)
           : Promise.resolve(undefined);
-        const receipt = await observeRetrievalResolutionV1(() => resolveRuntimeQueryPlannerAuthorityV1({
+        const receipt = await entityNotFoundAsNull(() => observeRetrievalResolutionV1(() => resolveRuntimeQueryPlannerAuthorityV1({
           authenticated,
           plannerEnabled: queryPlannerEnabled,
           resolverFactory,
@@ -873,8 +906,10 @@ export function registerRetrievalTools(
           projectName,
           entityScope: args.entity_scope,
           ...(args.as_of !== undefined ? { asOf: args.as_of } : {}),
-        }));
+        })));
         const queryVector = await queryVectorPromise;
+        if (receipt === null) entityFallback = true;
+        else {
         const executeOptions: RuntimeCandidateExecuteOptions = {
           includeArchitecture: true,
           includeMemory: true,
@@ -913,12 +948,14 @@ export function registerRetrievalTools(
           ...r.evidence.map((e, i) => `<!-- ${e.id} -->\n[${i + 1}] ${e.content}`),
         ];
         return textContent(lines.join('\n'));
+        }
       }
-      const resolvedEntityIds = queryPlannerEnabled && anchored
-        ? await observeRetrievalResolutionV1(() => resolveRuntimeEntityIds(
+      const resolvedEntityIds = queryPlannerEnabled && anchored && !entityFallback
+        ? await entityNotFoundAsNull(() => observeRetrievalResolutionV1(() => resolveRuntimeEntityIds(
           authenticated, resolverFactory, tenantId, projectName, args.entity_scope, args.as_of,
-        ))
+        )))
         : undefined;
+      if (resolvedEntityIds === null) entityFallback = true;
       const r = await assembler.ask(args.question, {
         level: args.reasoning_level,
         entity_scope: args.entity_scope,
@@ -926,7 +963,7 @@ export function registerRetrievalTools(
         project_name: projectName as string | undefined,
         as_of: args.as_of,
         tenantId,
-        ...(resolvedEntityIds !== undefined ? { resolvedEntityIds } : {}),
+        ...(resolvedEntityIds !== undefined && resolvedEntityIds !== null ? { resolvedEntityIds } : {}),
       });
       const lines = [
         `# Answer`,
@@ -938,7 +975,7 @@ export function registerRetrievalTools(
         `## Evidence`,
         ...r.evidence.map((e, i) => `<!-- ${e.id} -->\n[${i + 1}] ${e.content}`),
       ];
-      return textContent(lines.join('\n'));
+      return withFallbackNote(textContent(lines.join('\n')), entityFallback);
     },
   ));
 
