@@ -94,3 +94,56 @@ Live baseline BEFORE any ranking change (deployed `7538337`, trace off, 2026-09-
 Twelve real berry_load calls: 1 answered in the top five, 2 in the top ten. Memory-only aggregate
 over all 46 cases: Answer@1 0.3043, Answer@5 0.7174, Answer@10 0.7391, MRR 0.4462, zero errors.
 om-01 and rq-e-09 were also MISS on this run and are not part of the twelve.
+
+## 2026-09-05 — om-18..om-33: sixteen more berry_load cases from real memberry agent traffic
+
+Source: the 26 still-unused `project:memberry` `berry_load` calls in `bench/eval/mined-queries.jsonl`.
+Same procedure as om-06..17: adjudicated READ-ONLY with `berry_grep` on the identifier each question
+names (packet ids, commit SHAs, decision numbers, "pass 6", "ZIP32"); the matched node ids are the
+expected evidence and the grep pattern is cited in `sourceOfTruth`. Inputs are the mined arguments
+verbatim. Two pairs share an answer with different real inputs (om-23/om-24 → Decision47;
+om-28/om-29 → the RETRIEVAL-ASSEMBLER-BOUNDARY-HARD-001 closure), the same way om-02/om-05 do.
+
+Not adjudicated (10): five open-ended "resume/continue the roadmap" prompts with no single
+defensible answer (q-e5595f91bdc9, q-516a52a9e259, q-e76438ddc681, q-3723f401a028,
+q-98f46051da19); four whose named identifier has no node in the graph (q-9f244a78023f
+`f98d2076`, q-a964b25e8add "exclusive-publication", q-67cb3a335f88 "repair sequence" /
+"hostile rejection", q-609cb5b5dcf0 no node records the PR 16+17 merge); and q-9184fb234a68
+(G2 closure is spread over several nodes, none of which is "the" answer).
+
+Live baseline BEFORE any ranking change (deployed `037247c`, trace off, 2026-09-05):
+
+| case | plane | rank |
+|---|---|---|
+| om-18 | semantic | MISS |
+| om-19 | semantic | MISS |
+| om-20 | semantic | MISS |
+| om-21 | episodic | MISS |
+| om-22 | semantic | MISS |
+| om-23 | semantic | MISS |
+| om-24 | semantic | MISS |
+| om-25 | semantic | MISS |
+| om-26 | semantic | 6 |
+| om-27 | episodic | MISS |
+| om-28 | episodic | MISS |
+| om-29 | episodic | MISS |
+| om-30 | semantic | MISS |
+| om-31 | semantic | MISS |
+| om-32 | semantic | MISS |
+| om-33 | episodic | MISS |
+
+Sixteen real berry_load calls: 0 answered in the top five, 1 in the top ten. All 28 berry_load
+cases (om-06..33): 3 in the top five (om-08 5, om-09 4; om-14 9, om-26 6 in the top ten).
+
+Memory-only aggregate, now 62 cases, zero errors:
+Answer@1 0.2097, Answer@5 0.5323, Answer@10 0.5645, MRR 0.3206. Per plane: block 5/5 @5,
+fact 5/5 @5, episodic 0.6000 @5 (n=25), semantic 0.2963 @5 (n=27).
+The previous 46-case subset on this same run: Answer@1 0.2826, Answer@5 0.7174, Answer@10 0.7391,
+MRR 0.4285 (2026-09-05 post-deploy read was 0.7391 / 0.4495; one case moved between runs, no code
+change in between — run-to-run noise on the same deploy). **The slice-5 gate is now the 62-case
+number: Answer@5 must not drop below 0.5323 and the 46-case subset must not drop below 0.7174.**
+
+What the instrument is now saying: the berry_load path answers 3 of 28 real agent calls in the
+top five. The block and fact planes are saturated (5/5); every remaining miss is semantic or
+episodic ranking under berry_load. That is the population slice 5 (query-aware anchored
+selection) has to move.
