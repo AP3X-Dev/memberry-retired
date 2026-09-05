@@ -204,6 +204,16 @@ const DENIAL_REASON_SET: ReadonlySet<string> = new Set(RUNTIME_QUERY_PLANNER_DEN
  * disagree about what a denial looks like.
  */
 export function readResolverDenialReasonV1(diagnostics: unknown): RuntimeQueryPlannerDenialReasonV1 | undefined {
+  try {
+    return readResolverDenialReasonUnsafe(diagnostics);
+  } catch (error) {
+    if (error instanceof RuntimeQueryPlannerError) throw error;
+    // A revoked proxy makes even Array.isArray throw; that is structural too.
+    throw new RuntimeQueryPlannerError('resolution_failed');
+  }
+}
+
+function readResolverDenialReasonUnsafe(diagnostics: unknown): RuntimeQueryPlannerDenialReasonV1 | undefined {
   if (!Array.isArray(diagnostics) || nodeUtilTypes.isProxy(diagnostics)
     || Object.getPrototypeOf(diagnostics) !== Array.prototype) throw new RuntimeQueryPlannerError('resolution_failed');
   const length = Object.getOwnPropertyDescriptor(diagnostics, 'length');
