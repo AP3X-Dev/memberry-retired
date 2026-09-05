@@ -507,7 +507,9 @@ describe('RET-002C2 authenticated planner wiring', () => {
     expect(assembler.renderMarkdown).not.toHaveBeenCalled();
   });
 
-  it.each([...RUNTIME_QUERY_PLANNER_DENIAL_REASONS_V1])('carries the resolver diagnostic %s as a structured reason on resolution_failed', async (reason) => {
+  // entity_not_found is the one reason that degrades instead of throwing (B-3); see
+  // tools.entity-not-found-fallback.test.ts.
+  it.each(RUNTIME_QUERY_PLANNER_DENIAL_REASONS_V1.filter((reason) => reason !== 'entity_not_found'))('carries the resolver diagnostic %s as a structured reason on resolution_failed', async (reason) => {
     const result = { resolution: { state: 'denied', canonicalEntityIds: [] }, diagnostics: [reason] };
     const { assembler, container } = plannerContainer({ result });
     const { server, handlers } = makeServerStub();

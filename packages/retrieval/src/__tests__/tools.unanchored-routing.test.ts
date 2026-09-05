@@ -280,10 +280,14 @@ describe('RL-018 unanchored requests route to the task-text path', () => {
     });
   });
 
-  it('an anchored request whose entity does not resolve still fails loudly', async () => {
-    // Naming an entity that is not there is a real answer, not a routing problem. It must not
-    // silently downgrade into a broad task-text sweep.
-    const { assembler, container } = liveContainer(emptyCtx());
+  it('an anchored request whose entity does not resolve degrades LOUDLY, never silently (B-3, 2026-09-05)', async () => {
+    // This pin used to demand a throw here. B-3 reversed the routing call once structured denial
+    // reasons showed that, live, every such failure was a symbol, slug or path with no Entity —
+    // ordinary usage, never an authority denial. The concern the old pin guarded is unchanged and
+    // is what this test now checks: the downgrade must not be SILENT. The response opens with a
+    // value-free note, the resolution is still counted as failed, and the candidate runtime is
+    // never entered. See tools.entity-not-found-fallback.test.ts for the full matrix.
+    const { assembler, candidateRuntime, container } = liveContainer(emptyCtx());
     const notFound = createRetrievalContainer({
       ...container,
       resolverFactory: () => ({
@@ -296,10 +300,15 @@ describe('RL-018 unanchored requests route to the task-text path', () => {
     const { server, handlers } = makeServerStub();
     registerRetrievalTools(server as never, notFound);
 
-    await expect(handlers.get('berry_context')!({
+    const before = processCounters();
+    const result = await handlers.get('berry_context')!({
       task: 'q', project_name: 'project:memberry', entity_scope: ['NoSuchThing'],
-    })).rejects.toThrow('runtime_query_planner:resolution_failed');
+    }) as { content: Array<{ type: string; text: string }> };
+    const after = processCounters();
 
-    expect(assembler.assemble).not.toHaveBeenCalled();
+    expect(result.content[0]!.text).toBe('**Entity scope:** unresolved (entity_not_found); answered from task text\n\n# md');
+    expect(candidateRuntime.execute).not.toHaveBeenCalled();
+    expect(assembler.assemble).toHaveBeenCalledTimes(1);
+    expect((after.resolution.resolution_failed as number) - (before.resolution.resolution_failed as number)).toBe(1);
   });
 });
