@@ -209,6 +209,15 @@ async function candidateOffBytes(value: undefined | '01', args: Record<string, u
   return bytes;
 }
 
+// B-3: a hint that names no Entity degrades to the task-text path, loudly, instead of failing.
+async function fallbackNote(name: string, args: Record<string, unknown>): Promise<void> {
+  const result = await tenantClient!.callTool({ name, arguments: args });
+  const text = JSON.stringify(result);
+  expect(result.isError).not.toBe(true);
+  expect(text).toContain('**Entity scope:** unresolved (entity_not_found); answered from task text');
+  expect(text).not.toContain(RUN);
+}
+
 async function fixedFailure(name: string, args: Record<string, unknown>): Promise<void> {
   let text = '';
   try { text = JSON.stringify(await tenantClient!.callTool({ name, arguments: args })); }
@@ -439,7 +448,7 @@ describe.skipIf(!ENABLED)('RET-003B required real-bootstrap HTTP candidate compo
     const ordinaryParity = await tenantClient!.callTool({ name: 'berry_context', arguments: { ...args, include_trace: false } });
     expect(JSON.stringify([ordinaryParity, first, ask])).toBe(baselineParityBytes);
 
-    await fixedFailure('berry_context', { task: 'empty', project_name: EMPTY_PROJECT, entity_scope: [HINT] });
+    await fallbackNote('berry_context', { task: 'empty', project_name: EMPTY_PROJECT, entity_scope: [HINT] });
     await fixedFailure('berry_context', { task: 'ambiguous', project_name: AMBIGUOUS_PROJECT, entity_scope: [HINT] });
     await fixedFailure('berry_context', { task: 'foreign', project_name: FOREIGN_PROJECT, entity_scope: [HINT] });
 

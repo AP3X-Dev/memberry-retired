@@ -58,8 +58,22 @@ function emptyContext(task: string): UnifiedContext {
   return { task, strategy: 'ranked', sections: [], token_count: 0, assembled_at: '2026-08-16T00:00:00.000Z' };
 }
 
+// A task-text call (B-3 fallback) carries no resolvedEntityIds; record it as [] so the count
+// assertions below can tell "went downstream unanchored" from "went downstream anchored".
 function idsFrom(options: { resolvedEntityIds?: unknown }): string[] {
-  return [...(options.resolvedEntityIds as readonly string[])];
+  return 'resolvedEntityIds' in options ? [...(options.resolvedEntityIds as readonly string[])] : [];
+}
+
+const FALLBACK_NOTE = '**Entity scope:** unresolved (entity_not_found); answered from task text';
+
+// B-3: a hint that names no Entity degrades to the task-text path, loudly. Never an error,
+// never a resolved id downstream, never the caller's values in the note.
+async function callMustFallBack(name: string, args: Record<string, unknown>): Promise<void> {
+  const result = await client!.callTool({ name, arguments: args });
+  const text = JSON.stringify(result);
+  expect(result.isError).not.toBe(true);
+  expect(text).toContain(FALLBACK_NOTE);
+  expect(text).not.toContain(RUN);
 }
 
 async function callMustFail(name: string, args: Record<string, unknown>): Promise<void> {
@@ -267,9 +281,13 @@ describe.skipIf(!ENABLED)('RET-002C2 required authenticated HTTP planner composi
     expect(askIds).toEqual([[SAFE_ENTITY_ID]]);
 
     const downstreamCount = ordinaryIds.length + tracedIds.length + askIds.length;
-    await callMustFail('berry_context', {
+    await callMustFallBack('berry_context', {
       task: 'not-found', project_name: EMPTY_PROJECT, entity_scope: [SAFE_HINT],
     });
+    // The fallback went downstream exactly once, as a task-text call with no resolved id.
+    expect(ordinaryIds.length + tracedIds.length + askIds.length).toBe(downstreamCount + 1);
+    expect(ordinaryIds.at(-1)).toEqual([]);
+    const afterFallbackCount = downstreamCount + 1;
     await callMustFail('berry_context', {
       task: 'ambiguous', project_name: AMBIGUOUS_PROJECT, entity_scope: [AMBIGUOUS_HINT],
     });
@@ -279,7 +297,7 @@ describe.skipIf(!ENABLED)('RET-002C2 required authenticated HTTP planner composi
     await callMustFail('berry_ask', {
       question: 'foreign', project_name: SAFE_PROJECT, entity_scope: [FOREIGN_HINT],
     });
-    expect(ordinaryIds.length + tracedIds.length + askIds.length).toBe(downstreamCount);
+    expect(ordinaryIds.length + tracedIds.length + askIds.length).toBe(afterFallbackCount);
     succeeded = true;
   }, 30_000);
 });
