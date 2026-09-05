@@ -2,6 +2,8 @@ import { describe, expect, it, vi } from 'vitest';
 import { RuntimeQueryPlannerError,
   buildRuntimeQueryPlanV1,
   buildRuntimeQueryPlannerReceiptV1,
+  readResolverDenialReasonV1,
+  resolveRuntimeQueryPlannerAuthorityV1,
 } from '../runtime-query-planner.js';
 
 describe('RET-002C2 authenticated runtime query planner', () => {
@@ -85,6 +87,34 @@ describe('RET-002C2 authenticated runtime query planner', () => {
     const invalid = new RuntimeQueryPlannerError('invalid_request', 'entity_not_found');
     expect(invalid.message).toBe('runtime_query_planner:invalid_request');
     expect(invalid.reason).toBeUndefined();
+  });
+
+
+  it('the receipt path carries the resolver diagnostic as the reason (the live candidate-channel route)', async () => {
+    const denied = { resolution: { state: 'not-found', canonicalEntityIds: [] }, diagnostics: ['entity_not_found'] };
+    const resolverFactory = vi.fn(() => ({ resolve: vi.fn().mockResolvedValue(denied) }));
+    const failure = await resolveRuntimeQueryPlannerAuthorityV1({
+      authenticated: true, plannerEnabled: true, resolverFactory,
+      tenantId: 'tenant-a', projectName: 'project:memberry', entityScope: ['Ghost'],
+    }).then(() => null, (error: unknown) => error) as RuntimeQueryPlannerError;
+    expect(failure).toBeInstanceOf(RuntimeQueryPlannerError);
+    expect(failure.reason).toBe('entity_not_found');
+    expect(failure.message).toBe('runtime_query_planner:resolution_failed:entity_not_found');
+  });
+
+  it('readResolverDenialReasonV1 returns the first known code, undefined for empty, and fails closed bare otherwise', () => {
+    expect(readResolverDenialReasonV1([])).toBeUndefined();
+    expect(readResolverDenialReasonV1(['entity_ambiguous', 'entity_not_found'])).toBe('entity_ambiguous');
+    const accessor: unknown[] = [];
+    Object.defineProperty(accessor, '0', { enumerable: true, get: () => 'entity_not_found' });
+    Object.defineProperty(accessor, 'length', { value: 1 });
+    const revoked = Proxy.revocable([], {}); revoked.revoke();
+    for (const bad of [['made_up'], new Array(1), accessor, Object.assign([], { extra: 1 }), revoked.proxy, 'entity_not_found', null]) {
+      const thrown = (() => { try { readResolverDenialReasonV1(bad); return null; } catch (error) { return error as RuntimeQueryPlannerError; } })();
+      expect(thrown).toBeInstanceOf(RuntimeQueryPlannerError);
+      expect(thrown!.reason).toBeUndefined();
+      expect(thrown!.message).toBe('runtime_query_planner:resolution_failed');
+    }
   });
 
 });
