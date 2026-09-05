@@ -30,6 +30,9 @@ export interface BootstrapEntity {
   parent?: string;
   /** Confined absolute ingest root (project entities only); overwritten on every ingest */
   root_path?: string;
+  /** Additional retrieval names (e.g. the npm package name of a workspace module).
+   *  Merged additively and deduplicated; never removes an existing alias. */
+  aliases?: string[];
 }
 
 export interface BootstrapSemantic {
@@ -316,6 +319,12 @@ export class BootstrapGraphService {
     // the truth. Clause is omitted entirely when absent so the query text is
     // unchanged for callers that never set it.
     const rootPathClause = entity.root_path !== undefined ? ' SET e.root_path = $rootPath' : '';
+    // Aliases are additive: union with whatever the entity already carries so a
+    // re-ingest can only widen resolution, never narrow it.
+    const aliases = entity.aliases?.filter((alias) => typeof alias === 'string' && alias.trim() !== '' && alias !== entity.name);
+    const aliasClause = aliases && aliases.length > 0
+      ? ' SET e.aliases = coalesce(e.aliases, []) + [alias IN $aliases WHERE NOT alias IN coalesce(e.aliases, [])]'
+      : '';
     const res = await session.run(
       `MERGE (e:Entity {name: $name})
        ON CREATE SET e.id = $id, e.type = $type, e.description = $description,
@@ -325,7 +334,7 @@ export class BootstrapGraphService {
                     e.project_scope = CASE
                       WHEN $projectScope IS NOT NULL AND e.project_scope IS NULL THEN $projectScope
                       ELSE e.project_scope
-                    END${rootPathClause}
+                    END${rootPathClause}${aliasClause}
        RETURN e.id AS id, e.created_at = $now AS isNew,
               e.project_scope AS storedProjectScope`,
       {
@@ -336,6 +345,7 @@ export class BootstrapGraphService {
         projectScope: projectScope ?? null,
         now: new Date().toISOString(),
         ...(entity.root_path !== undefined ? { rootPath: entity.root_path } : {}),
+        ...(aliasClause !== '' ? { aliases } : {}),
       },
     );
     const storedProjectScope = res.records[0].get('storedProjectScope') as unknown;

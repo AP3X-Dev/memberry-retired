@@ -1121,6 +1121,7 @@ export function buildToolHandlers(container: ServiceContainer = defaultContainer
         type: m.type,
         description: m.description,
         parent: m.parent === scan.name ? projectName : m.parent,
+        ...(m.aliases && m.aliases.length > 0 ? { aliases: m.aliases } : {}),
       }));
 
       // gap-16: generate human-readable baseline semantic seeds for the project
