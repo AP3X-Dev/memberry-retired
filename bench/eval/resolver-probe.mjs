@@ -35,6 +35,7 @@ const classify = (res) => {
   const match = PLANNER_ERROR.exec(JSON.stringify(res.raw ?? '') + res.text)
   if (match) return `runtime_query_planner:${match[1]}${match[2] ? ':' + match[2] : ''}`
   if (res.isError || res.raw?.error) return 'other_failure'
+  if (/\*\*Entity scope:\*\* unresolved \(entity_not_found\)/.test(res.text)) return 'fallback:entity_not_found'
   return 'resolved'
 }
 
