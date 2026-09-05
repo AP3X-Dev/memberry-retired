@@ -693,6 +693,15 @@ instrument; re-pinning EVAL-001 is not a substitute.
 
 ---
 
+**2026-09-05 note.** The SOURCES list in `runtime-candidate-channel.ts` now carries
+`memory.semantic-vector`, `memory.episodic-vector` and `memory.block` alongside `memory.scope`
+and `arch.entity`, so the anchored berry_context path is no longer selection-blind as written above;
+the entry's headline is stale and the row cliff (point 1) and meaning-based reachability (point 3)
+remain the open parts. The berry_load path is a different pipeline entirely (`AMPService.load()`),
+and its dominant defect was ranking, not selection — see RL-028.
+
+---
+
 ### RL-022 — anchored Entity reachability is poor; agent-weighted impact was not yet observable
 **Evidence:** measured live (2026-08-29) · **Status:** compatibility fix and agent-first measurement prepared; topology repair open · **Opened:** 2026-08-29
 
@@ -1216,6 +1225,32 @@ authority-scoped, benchmark-agnostic, and preserve all 33 current wins.
 
 **Revisit when:** `rq-e-07` enters the served candidate window, any current win regresses, p95
 exceeds 500 ms, a response exceeds 32 KiB, or the rollback image is retired.
+
+---
+
+### RL-028 — `rankMemories` recency term starved relevance; 25 of 28 real berry_load calls missed
+**Evidence:** measured live and in-process (2026-09-05) · **Status:** fixed behind `MEMBERRY_MEMORY_RANK_V2`, ON in production since deploy `71cf46b` · **Opened:** 2026-09-05
+
+`packages/core/src/ranking.ts` scored `confidence * exp(-ageDays / 7) * relevance`. A three-week-old
+approved decision therefore carried ~13x less recency weight than a three-day-old one, and the vector
+channels' cosine scores (live: 0.79..0.82 across the whole top-20) were far too flat to push back.
+Observed effect: the same four newest semantics topped every `berry_load` regardless of the question
+(`bench/eval/SELECTION-LOG.md`, om-18..33 baseline), and 25 of the 28 real agent calls in
+`outcome-cases.jsonl` missed their adjudicated answer in the top five.
+
+Fix (PR #156): under the flag, recency is floored at 0.95 and each vector channel's hits are scored by
+in-channel rank (1.0 down to the 0.5 scope-only default). Chosen from an in-process matrix against
+the live graph (`bench/eval/memory-load-measure.mts`, run from the gate worktree with tsx):
+Answer@5 / MRR on the 28 cases — baseline 0.07 / 0.03; floor 0.5 alone 0.25 / 0.16; floor 0.5 +
+rank 0.46 / 0.28; floor 0.8 + rank 0.50 / 0.34; floor 0.95 + rank 0.50 / 0.38 (shipped). Raising the
+vector top-K to 50 was worse in every combination (episodic flood: episode task text is near-identical
+to the mined queries). Live after deploy, two identical reads: 62-case memory-only Answer@5 0.5323 ->
+0.7419, MRR 0.3206 -> 0.4977; the 46-case berry_context-heavy subset 0.7174 -> 0.8261.
+
+**Left open.** Four berry_load cases never enter the candidate set (scope channel is 50-newest, vector
+channels top-20); eight more are in the set but below the budget cut. Selection, not ranking. Also:
+relevance for scope-only nodes is still a constant 0.5, so with the flag on, a scope-only node ties the
+last vector hit — untested whether that should be lower.
 
 ---
 

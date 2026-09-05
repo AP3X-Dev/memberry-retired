@@ -147,3 +147,28 @@ What the instrument is now saying: the berry_load path answers 3 of 28 real agen
 top five. The block and fact planes are saturated (5/5); every remaining miss is semantic or
 episodic ranking under berry_load. That is the population slice 5 (query-aware anchored
 selection) has to move.
+
+## 2026-09-05 — slice 5 result: MEMBERRY_MEMORY_RANK_V2 live (deployed `71cf46b`, flag on)
+
+Change: PR #156, relevance-first ranking in `AMPService.load()` (recency floored at 0.95,
+vector hits scored by in-channel rank). Root cause and the in-process matrix are in
+`packages/core/src/ranking.ts` and the PR. Two consecutive memory-only probe runs, trace off,
+byte-identical per-case ranks, zero errors:
+
+| set | Answer@1 | Answer@5 | Answer@10 | MRR | gate | before (037247c, flag absent) |
+|---|---|---|---|---|---|---|
+| all 62 memory cases | 0.3710 | **0.7419** | 0.7581 | 0.4977 | >= 0.5323 PASS | 0.2097 / 0.5323 / 0.5645 / 0.3206 |
+| previous 46-case subset | 0.4130 | **0.8261** | 0.8261 | 0.5522 | >= 0.7174 PASS | 0.2826 / 0.7174 / 0.7391 / 0.4285 |
+| 28 berry_load cases (om-06..33) | — | 0.5000 | 0.5357 | 0.3824 | — | 3/28 = 0.1071 @5 |
+
+Per plane @5: block 5/5, fact 5/5, episodic 0.6800 (was 0.6000), semantic 0.7037 (was 0.2963).
+The live berry_load numbers match the in-process `memory-load-measure.mts` reading for the same
+code to four decimals, which is the first time the two instruments have been cross-checked.
+
+The 46-case subset rose too: the berry_context/berry_ask cases feed the same `rankMemories` on
+their memory layer before the served reranker. Not a regression guard problem; a second gain.
+
+Still missing in the top five, all berry_load: om-06, om-21, om-29, om-31 never enter the
+candidate set (selection: the scope channel is 50-newest and the vector channels are top-20);
+om-07, om-10, om-12, om-17, om-19, om-20, om-30, om-33 are in the set but rank below the budget cut.
+Those are the next slice's population.
