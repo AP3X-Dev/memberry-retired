@@ -43,6 +43,51 @@ export function rankNormalizeRelevance<T extends { score: number }>(hits: T[]): 
   return hits.map((hit, i) => ({ ...hit, score: last === 0 ? 1 : 1 - 0.5 * (i / last) }));
 }
 
+/**
+ * MEMBERRY_MEMORY_LEXICAL_V1 (2026-09-05). Real agent questions name identifiers — packet ids,
+ * decision numbers, commit SHAs — and the answer's content contains them, but the vector channel
+ * ranked such answers 12th..15th of 20 on a flat 0.71..1.0 cosine spread, and berry_load has no
+ * lexical signal at all (berry_context's served reranker has one; core cannot import it).
+ * In-process matrix on the 28 berry_load cases with RANK_V2 on: Answer@5 / @10 / MRR —
+ * weight 0: 0.50 / 0.54 / 0.38; 0.5: 0.71 / 0.71 / 0.63; 1.0: 0.79 / 0.86 / 0.66 (shipped);
+ * 2.0: 0.79 / 0.86 / 0.67. Adjudication of those cases also grepped on identifiers, so the
+ * berry_context cases and the 46-case subset are the independent check post-deploy.
+ * ponytail: substring overlap on a closed identifier shape; a tokeniser earns its place only
+ * if a measured failure needs it.
+ */
+export const LEXICAL_IDENTIFIER_WEIGHT_V1 = 1.0;
+const IDENTIFIER_PATTERN = /[A-Za-z]*\d[A-Za-z0-9-]*|[A-Z]{2,}[A-Za-z0-9-]*-[A-Za-z0-9-]+/g;
+
+export function memoryLexicalV1(): boolean {
+  return readEnv('MEMBERRY_MEMORY_LEXICAL_V1') === '1';
+}
+
+/** Identifier-shaped tokens of a task string, lowercased, unique, length >= 4. */
+export function taskIdentifiers(task: string): readonly string[] {
+  const found = task.match(IDENTIFIER_PATTERN) ?? [];
+  return [...new Set(found.map((token) => token.toLowerCase()).filter((token) => token.length >= 4))];
+}
+
+/**
+ * Adds weight * (share of the task's identifiers present in the content) to each node's
+ * relevance (default 0.5 when unset). Pure; identity when the flag is off or the task names no
+ * identifier.
+ */
+export function boostByIdentifierOverlap<T extends { content: string; relevanceScore?: number }>(
+  task: string,
+  nodes: T[],
+): T[] {
+  if (!memoryLexicalV1()) return nodes;
+  const identifiers = taskIdentifiers(task);
+  if (identifiers.length === 0) return nodes;
+  return nodes.map((node) => {
+    const content = node.content.toLowerCase();
+    const hits = identifiers.filter((token) => content.includes(token)).length;
+    if (hits === 0) return node;
+    return { ...node, relevanceScore: (node.relevanceScore ?? 0.5) + LEXICAL_IDENTIFIER_WEIGHT_V1 * (hits / identifiers.length) };
+  });
+}
+
 export function rankMemories(
   memories: Array<SemanticNode & { relevanceScore?: number }>,
   now: Date = new Date(),

@@ -1,6 +1,6 @@
 // packages/core/src/__tests__/ranking.test.ts
 import { describe, it, expect } from 'vitest';
-import { rankMemories, rankNormalizeRelevance, budgetTokens, estimateTokens } from '../ranking.js';
+import { rankMemories, rankNormalizeRelevance, boostByIdentifierOverlap, taskIdentifiers, budgetTokens, estimateTokens } from '../ranking.js';
 import type { SemanticNode } from '../types.js';
 
 function makeNode(
@@ -176,6 +176,31 @@ describe('rankMemories', () => {
       expect(rankNormalizeRelevance([])).toEqual([]);
     } finally {
       if (prev === undefined) delete process.env.MEMBERRY_MEMORY_RANK_V2; else process.env.MEMBERRY_MEMORY_RANK_V2 = prev;
+    }
+  });
+
+  it('taskIdentifiers keeps packet ids, decision numbers and SHAs, lowercased and unique', () => {
+    expect(taskIdentifiers('Resume after RET-005A closure commit ff64db6f and Decision 66; RET-005A again, MEM-001D2, LAB-011'))
+      .toEqual(['ret-005a', 'ff64db6f', 'mem-001d2', 'lab-011']);
+    expect(taskIdentifiers('what changed in retrieval')).toEqual([]);
+  });
+
+  it('boostByIdentifierOverlap is identity without the flag and adds the matched share with it', () => {
+    const nodes = [
+      { id: 'hit-all', content: 'RET-005A closed at ff64db6f', relevanceScore: 0.6 },
+      { id: 'hit-half', content: 'ret-005a only' },
+      { id: 'miss', content: 'nothing relevant', relevanceScore: 0.9 },
+    ];
+    const prev = process.env.MEMBERRY_MEMORY_LEXICAL_V1;
+    delete process.env.MEMBERRY_MEMORY_LEXICAL_V1;
+    try {
+      expect(boostByIdentifierOverlap('RET-005A ff64db6f', nodes)).toBe(nodes);
+      process.env.MEMBERRY_MEMORY_LEXICAL_V1 = '1';
+      const boosted = boostByIdentifierOverlap('RET-005A ff64db6f', nodes);
+      expect(boosted.map((n) => n.relevanceScore)).toEqual([1.6, 1.0, 0.9]);
+      expect(boostByIdentifierOverlap('no identifiers here', nodes)).toBe(nodes);
+    } finally {
+      if (prev === undefined) delete process.env.MEMBERRY_MEMORY_LEXICAL_V1; else process.env.MEMBERRY_MEMORY_LEXICAL_V1 = prev;
     }
   });
 

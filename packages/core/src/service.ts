@@ -17,7 +17,7 @@ import type {
   MemoryBlock,
   AuditSink,
 } from './types.js';
-import { rankMemories, rankNormalizeRelevance, rankFacts, budgetTokens, estimateTokens } from './ranking.js';
+import { rankMemories, rankNormalizeRelevance, boostByIdentifierOverlap, rankFacts, budgetTokens, estimateTokens } from './ranking.js';
 import type { RedisBlockLayer, Neo4jBlockLayer } from './blocks.js';
 import { MemoryBlockService } from './blocks.js';
 import { extractFacts, isTransientError } from './extract.js';
@@ -652,8 +652,8 @@ export class AMPService {
       }
     }
 
-    // 4. Rank
-    const ranked = rankMemories(merged);
+    // 4. Rank (MEMBERRY_MEMORY_LEXICAL_V1: identifier overlap with the task first; see ranking.ts)
+    const ranked = rankMemories(boostByIdentifierOverlap(scope.task, merged));
 
     // 5. Budget tokens — per-tier allocation
     const factBudget = Math.floor(maxTokens * FACT_BUDGET_RATIO);

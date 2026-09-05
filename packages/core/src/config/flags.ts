@@ -112,6 +112,8 @@ export const MEMBERRY_FLAGS: ReadonlyArray<MemberryFlag> = Object.freeze([
     'Secret-redact episode content before persistence (core store and wiki ingest); loose bool.'),
   f('MEMBERRY_REQUIRE_PROJECT_TAG', 'bool', 'true', 'core',
     'Require a project:<tag> on every store; only the exact string "false" disables.'),
+  f('MEMBERRY_MEMORY_LEXICAL_V1', 'bool', 'false', 'core',
+    'Boost memory relevance in load() by the share of the task\'s identifier-shaped tokens found in the content; only the exact string "1" enables.'),
   f('MEMBERRY_MEMORY_RANK_V2', 'bool', 'false', 'core',
     'Relevance-first memory ranking in load(): recency floored at 0.95 and vector hits scored by in-channel rank; only the exact string "1" enables.'),
   f('MEMBERRY_EMBEDDING_DIM', 'int', '1536', 'core',
