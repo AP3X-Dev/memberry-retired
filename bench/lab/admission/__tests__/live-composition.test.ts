@@ -346,7 +346,7 @@ describe('MEM-001D2 live composition evidence contract', () => {
       // D1/A6 readiness probe fields ride on the same 503 body once the server
       // registers a datastore probe source; the harness must accept exactly that
       // closed shape and nothing looser.
-      const probed = structuredClone(expectedDegraded) as any;
+      const probed = structuredClone(expectedDegraded) as Record<string, unknown>;
       probed.datastores = { neo4j: 'ok', redis: 'ok' };
       probed.embeddings = 'disabled';
       probed.degraded = ['embeddings: disabled (no OPENAI_API_KEY) — lexical/fulltext retrieval only'];
@@ -364,19 +364,20 @@ describe('MEM-001D2 live composition evidence contract', () => {
       });
 
       const hostile: Array<Record<string, unknown>> = [];
-      const datastoreExtra = structuredClone(probed) as any;
-      datastoreExtra.datastores.note = 'FORGED-UPSTREAM-SECRET';
+      const cloneProbed = (): Record<string, unknown> => structuredClone(probed);
+      const datastoreExtra = cloneProbed();
+      (datastoreExtra.datastores as Record<string, unknown>).note = 'FORGED-UPSTREAM-SECRET';
       hostile.push(datastoreExtra);
-      const datastoreUnreachable = structuredClone(probed) as any;
-      datastoreUnreachable.datastores.neo4j = 'unreachable';
+      const datastoreUnreachable = cloneProbed();
+      (datastoreUnreachable.datastores as Record<string, unknown>).neo4j = 'unreachable';
       hostile.push(datastoreUnreachable);
-      const embeddingsUnknown = structuredClone(probed) as any;
+      const embeddingsUnknown = cloneProbed();
       embeddingsUnknown.embeddings = 'FORGED-UPSTREAM-SECRET';
       hostile.push(embeddingsUnknown);
-      const partialProbe = structuredClone(expectedDegraded) as any;
+      const partialProbe = structuredClone(expectedDegraded) as Record<string, unknown>;
       partialProbe.lifecycle = probed.lifecycle;
       hostile.push(partialProbe);
-      const probeMissingDegraded = structuredClone(probed) as any;
+      const probeMissingDegraded = cloneProbed();
       delete probeMissingDegraded.degraded;
       hostile.push(probeMissingDegraded);
       const extraWorker = structuredClone(expectedDegraded) as any;
