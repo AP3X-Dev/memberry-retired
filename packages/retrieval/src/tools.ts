@@ -313,8 +313,7 @@ function oneResolvedEntityId(input: unknown): readonly [string] {
     const resolution = ownDataValue(input, 'resolution');
     const diagnostics = ownDataValue(input, 'diagnostics');
     if (typeof diagnostics !== 'object' || diagnostics === null || nodeUtilTypes.isProxy(diagnostics)
-      || !Array.isArray(diagnostics) || Object.getPrototypeOf(diagnostics) !== Array.prototype
-      || Reflect.ownKeys(diagnostics).length !== 1) {
+      || !Array.isArray(diagnostics) || Object.getPrototypeOf(diagnostics) !== Array.prototype) {
       throw fixedPlannerFailure('resolution_failed');
     }
     const diagnosticsLength = Object.getOwnPropertyDescriptor(diagnostics, 'length');
