@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
-import {
+import { RuntimeQueryPlannerError,
   buildRuntimeQueryPlanV1,
   buildRuntimeQueryPlannerReceiptV1,
 } from '../runtime-query-planner.js';
@@ -74,4 +74,17 @@ describe('RET-002C2 authenticated runtime query planner', () => {
     }
     expect(hooks).not.toHaveBeenCalled();
   });
+
+  it('RuntimeQueryPlannerError carries a reason only for resolution_failed and keeps the code prefix stable', () => {
+    const denied = new RuntimeQueryPlannerError('resolution_failed', 'entity_not_found');
+    expect(denied.message).toBe('runtime_query_planner:resolution_failed:entity_not_found');
+    expect(denied.reason).toBe('entity_not_found');
+    const bare = new RuntimeQueryPlannerError('resolution_failed');
+    expect(bare.message).toBe('runtime_query_planner:resolution_failed');
+    expect(bare.reason).toBeUndefined();
+    const invalid = new RuntimeQueryPlannerError('invalid_request', 'entity_not_found');
+    expect(invalid.message).toBe('runtime_query_planner:invalid_request');
+    expect(invalid.reason).toBeUndefined();
+  });
+
 });

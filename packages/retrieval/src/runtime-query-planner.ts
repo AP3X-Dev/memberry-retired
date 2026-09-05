@@ -16,10 +16,35 @@ const RESERVED_AUTHORITY_HINT = /^(?:project|tenant):/i;
 const MAX_PROJECT_SCOPE_LENGTH = 136;
 const MAX_HINT_LENGTH = 200;
 
+/**
+ * Closed set of structured denial reasons a `resolution_failed` error may carry (loop item 18).
+ * Mirrors the resolver's diagnostic codes one-to-one; every value is content-free, so the wire
+ * message stays value-free. Infra/structural failures carry no reason.
+ */
+export const RUNTIME_QUERY_PLANNER_DENIAL_REASONS_V1 = Object.freeze([
+  'authority_mismatch',
+  'project_denied',
+  'entity_not_found',
+  'entity_ambiguous',
+  'entity_id_denied',
+  'entity_multi_project',
+  'entity_path_ambiguous',
+  'entity_containment_cycle',
+  'entity_scope_overflow',
+] as const);
+export type RuntimeQueryPlannerDenialReasonV1 = (typeof RUNTIME_QUERY_PLANNER_DENIAL_REASONS_V1)[number];
+
 export class RuntimeQueryPlannerError extends Error {
-  constructor(readonly code: 'invalid_request' | 'authentication_required' | 'unavailable' | 'resolution_failed') {
-    super(`runtime_query_planner:${code}`);
+  /** Only `resolution_failed` carries a reason; the code alone stays the stable prefix. */
+  readonly reason: RuntimeQueryPlannerDenialReasonV1 | undefined;
+  constructor(
+    readonly code: 'invalid_request' | 'authentication_required' | 'unavailable' | 'resolution_failed',
+    reason?: RuntimeQueryPlannerDenialReasonV1,
+  ) {
+    const withReason = code === 'resolution_failed' && reason !== undefined;
+    super(withReason ? `runtime_query_planner:${code}:${reason}` : `runtime_query_planner:${code}`);
     this.name = 'RuntimeQueryPlannerError';
+    this.reason = withReason ? reason : undefined;
   }
 }
 

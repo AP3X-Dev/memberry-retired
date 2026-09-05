@@ -21,6 +21,8 @@ import {
   readRuntimeQueryPlannerAuthorityV1,
   resolveRuntimeQueryPlannerAuthorityV1,
   RuntimeQueryPlannerError,
+  RUNTIME_QUERY_PLANNER_DENIAL_REASONS_V1,
+  type RuntimeQueryPlannerDenialReasonV1,
   type RuntimeQueryPlannerResolvedReceiptV1,
 } from './runtime-query-planner.js';
 import {
@@ -290,6 +292,8 @@ function candidateShadowObserver(
   };
 }
 
+const PLANNER_DENIAL_REASONS: ReadonlySet<string> = new Set(RUNTIME_QUERY_PLANNER_DENIAL_REASONS_V1);
+
 function fixedPlannerFailure(code: RuntimeQueryPlannerError['code']): RuntimeQueryPlannerError {
   return new RuntimeQueryPlannerError(code);
 }
@@ -309,13 +313,29 @@ function oneResolvedEntityId(input: unknown): readonly [string] {
     const resolution = ownDataValue(input, 'resolution');
     const diagnostics = ownDataValue(input, 'diagnostics');
     if (typeof diagnostics !== 'object' || diagnostics === null || nodeUtilTypes.isProxy(diagnostics)
-      || !Array.isArray(diagnostics) || Object.getPrototypeOf(diagnostics) !== Array.prototype
-      || Reflect.ownKeys(diagnostics).length !== 1) {
+      || !Array.isArray(diagnostics) || Object.getPrototypeOf(diagnostics) !== Array.prototype) {
       throw fixedPlannerFailure('resolution_failed');
     }
     const diagnosticsLength = Object.getOwnPropertyDescriptor(diagnostics, 'length');
-    if (!diagnosticsLength || !Object.prototype.hasOwnProperty.call(diagnosticsLength, 'value')
-      || diagnosticsLength.value !== 0) throw fixedPlannerFailure('resolution_failed');
+    const diagnosticsCount = diagnosticsLength && Object.prototype.hasOwnProperty.call(diagnosticsLength, 'value')
+      ? diagnosticsLength.value : undefined;
+    // Loop item 18: a dense data array of known diagnostic codes is the resolver's structured
+    // denial. The first code becomes the error's reason. Anything else (hooks, sparse, unknown
+    // code, oversize) is structural and fails closed without a reason, exactly as before.
+    if (!Number.isSafeInteger(diagnosticsCount) || (diagnosticsCount as number) < 0
+      || (diagnosticsCount as number) > RUNTIME_QUERY_PLANNER_DENIAL_REASONS_V1.length
+      || Reflect.ownKeys(diagnostics).length !== (diagnosticsCount as number) + 1) {
+      throw fixedPlannerFailure('resolution_failed');
+    }
+    const codes: RuntimeQueryPlannerDenialReasonV1[] = [];
+    for (let index = 0; index < (diagnosticsCount as number); index += 1) {
+      const entry = Object.getOwnPropertyDescriptor(diagnostics, String(index));
+      if (!entry || !Object.prototype.hasOwnProperty.call(entry, 'value') || entry.enumerable !== true
+        || typeof entry.value !== 'string'
+        || !PLANNER_DENIAL_REASONS.has(entry.value)) throw fixedPlannerFailure('resolution_failed');
+      codes.push(entry.value as RuntimeQueryPlannerDenialReasonV1);
+    }
+    if (codes.length > 0) throw new RuntimeQueryPlannerError('resolution_failed', codes[0]);
     if (typeof resolution !== 'object' || resolution === null || nodeUtilTypes.isProxy(resolution)
       || Array.isArray(resolution) || Object.getPrototypeOf(resolution) !== Object.prototype
       || Reflect.ownKeys(resolution).length !== 2
