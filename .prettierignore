@@ -12,3 +12,4 @@
 !/packages/core/src/__tests__/test-files.inventory.test.ts
 # test-files.manifest.txt is deliberately absent: prettier has no parser for .txt and
 # --check errors on it. The manifest's format is enforced by the test above instead.
+!/bench/lab/contracts/readiness-probe-status.ts

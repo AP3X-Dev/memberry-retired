@@ -1894,6 +1894,24 @@ describe('RET-001D live composition harness', () => {
     expect(() => classifyTraceReadiness(200, body, 'named-tenant'))
       .toThrow('RET001D_READINESS_INVALID');
 
+    // D1/A6 datastore-probe fields ride on the same 503 body once a probe source is registered.
+    const probed = {
+      ...body,
+      datastores: { neo4j: 'ok', redis: 'ok' },
+      embeddings: 'disabled',
+      degraded: ['embeddings: disabled (no OPENAI_API_KEY) - lexical/fulltext retrieval only'],
+      lifecycle: { mode: 'disabled', last_run_at: null, last_result: 'never' },
+    };
+    expect(classifyTraceReadiness(503, probed, 'named-tenant')).toEqual({
+      status: 503,
+      classification: 'expected-logical-multitenant-degraded',
+    });
+    expect(() => classifyTraceReadiness(503, { ...body, lifecycle: probed.lifecycle }, 'named-tenant'))
+      .toThrow('RET001D_READINESS_INVALID');
+    expect(() => classifyTraceReadiness(
+      503, { ...probed, datastores: { neo4j: 'unreachable', redis: 'ok' } }, 'named-tenant',
+    )).toThrow('RET001D_READINESS_INVALID');
+
     for (const invalid of [
       { ...body, retrieval_resolution: undefined },
       { ...body, retrieval_resolution: { ...retrievalResolutionStatus(), extra: true } },
