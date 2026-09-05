@@ -42,6 +42,7 @@ export {
   buildRuntimeQueryPlanV1,
   RuntimeQueryPlannerError,
   RUNTIME_QUERY_PLANNER_DENIAL_REASONS_V1,
+  readResolverDenialReasonV1,
 } from './runtime-query-planner.js';
 export type { RuntimeQueryPlannerDenialReasonV1 } from './runtime-query-planner.js';
 export type {

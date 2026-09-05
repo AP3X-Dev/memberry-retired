@@ -193,6 +193,36 @@ function plannerOwnData(input: object, key: string): unknown {
   return descriptor.value;
 }
 
+const DENIAL_REASON_SET: ReadonlySet<string> = new Set(RUNTIME_QUERY_PLANNER_DENIAL_REASONS_V1);
+
+/**
+ * Loop item 18. Reads the resolver's `diagnostics` as a structured denial: a dense data array
+ * of known codes. Returns the first code (the reason) or undefined for an empty array. Hooks,
+ * proxies, sparse or oversize arrays and unknown codes are structural and throw the bare
+ * `resolution_failed`, exactly as the old empty-array requirement did. Shared by both
+ * resolution paths (the receipt path here and the legacy path in tools.ts) so they can never
+ * disagree about what a denial looks like.
+ */
+export function readResolverDenialReasonV1(diagnostics: unknown): RuntimeQueryPlannerDenialReasonV1 | undefined {
+  if (!Array.isArray(diagnostics) || nodeUtilTypes.isProxy(diagnostics)
+    || Object.getPrototypeOf(diagnostics) !== Array.prototype) throw new RuntimeQueryPlannerError('resolution_failed');
+  const length = Object.getOwnPropertyDescriptor(diagnostics, 'length');
+  const count = length && Object.prototype.hasOwnProperty.call(length, 'value') ? length.value : undefined;
+  if (!Number.isSafeInteger(count) || (count as number) < 0
+    || (count as number) > RUNTIME_QUERY_PLANNER_DENIAL_REASONS_V1.length
+    || Reflect.ownKeys(diagnostics).length !== (count as number) + 1) throw new RuntimeQueryPlannerError('resolution_failed');
+  let first: RuntimeQueryPlannerDenialReasonV1 | undefined;
+  for (let index = 0; index < (count as number); index += 1) {
+    const entry = Object.getOwnPropertyDescriptor(diagnostics, String(index));
+    if (!entry || !Object.prototype.hasOwnProperty.call(entry, 'value') || entry.enumerable !== true
+      || typeof entry.value !== 'string' || !DENIAL_REASON_SET.has(entry.value)) {
+      throw new RuntimeQueryPlannerError('resolution_failed');
+    }
+    if (index === 0) first = entry.value as RuntimeQueryPlannerDenialReasonV1;
+  }
+  return first;
+}
+
 function exactResolvedEntityId(input: unknown): string {
   try {
     if (typeof input !== 'object' || input === null || nodeUtilTypes.isProxy(input)
@@ -200,10 +230,8 @@ function exactResolvedEntityId(input: unknown): string {
       || Reflect.ownKeys(input).length !== 2) throw new Error();
     const resolution = plannerOwnData(input, 'resolution');
     const diagnostics = plannerOwnData(input, 'diagnostics');
-    if (!Array.isArray(diagnostics) || nodeUtilTypes.isProxy(diagnostics)
-      || Object.getPrototypeOf(diagnostics) !== Array.prototype
-      || Reflect.ownKeys(diagnostics).length !== 1
-      || Object.getOwnPropertyDescriptor(diagnostics, 'length')?.value !== 0) throw new Error();
+    const reason = readResolverDenialReasonV1(diagnostics);
+    if (reason !== undefined) throw new RuntimeQueryPlannerError('resolution_failed', reason);
     if (typeof resolution !== 'object' || resolution === null || nodeUtilTypes.isProxy(resolution)
       || Array.isArray(resolution) || Object.getPrototypeOf(resolution) !== Object.prototype
       || Reflect.ownKeys(resolution).length !== 2
