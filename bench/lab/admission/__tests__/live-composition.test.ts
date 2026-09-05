@@ -343,7 +343,42 @@ describe('MEM-001D2 live composition evidence contract', () => {
       });
       expect(expected503Calls).toBe(4);
 
+      // D1/A6 readiness probe fields ride on the same 503 body once the server
+      // registers a datastore probe source; the harness must accept exactly that
+      // closed shape and nothing looser.
+      const probed = structuredClone(expectedDegraded) as any;
+      probed.datastores = { neo4j: 'ok', redis: 'ok' };
+      probed.embeddings = 'disabled';
+      probed.degraded = ['embeddings: disabled (no OPENAI_API_KEY) — lexical/fulltext retrieval only'];
+      probed.retrieval = { collection_size: { state: 'never', cached_at: 0 } };
+      probed.lifecycle = { mode: 'disabled', last_run_at: null, last_result: 'never' };
+      const probedResponses = [new Response(JSON.stringify(probed), { status: 503 }), ...mcpResponses()];
+      globalThis.fetch = async () => {
+        const response = probedResponses.shift();
+        if (!response) throw new Error('unexpected request');
+        return response;
+      };
+      await expect(probeAdmissionCompositionRoot(config)).resolves.toMatchObject({
+        evidence_http_status: 503,
+        evidence_readiness_class: 'expected-logical-multitenant-degraded',
+      });
+
       const hostile: Array<Record<string, unknown>> = [];
+      const datastoreExtra = structuredClone(probed) as any;
+      datastoreExtra.datastores.note = 'FORGED-UPSTREAM-SECRET';
+      hostile.push(datastoreExtra);
+      const datastoreUnreachable = structuredClone(probed) as any;
+      datastoreUnreachable.datastores.neo4j = 'unreachable';
+      hostile.push(datastoreUnreachable);
+      const embeddingsUnknown = structuredClone(probed) as any;
+      embeddingsUnknown.embeddings = 'FORGED-UPSTREAM-SECRET';
+      hostile.push(embeddingsUnknown);
+      const partialProbe = structuredClone(expectedDegraded) as any;
+      partialProbe.lifecycle = probed.lifecycle;
+      hostile.push(partialProbe);
+      const probeMissingDegraded = structuredClone(probed) as any;
+      delete probeMissingDegraded.degraded;
+      hostile.push(probeMissingDegraded);
       const extraWorker = structuredClone(expectedDegraded) as any;
       extraWorker.consolidation_automation.workers.push({ name: 'unrelated' });
       hostile.push(extraWorker);

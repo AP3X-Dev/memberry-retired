@@ -648,17 +648,50 @@ function hasClosedAdmissionShadowShape(value: unknown): boolean {
     && shadow.max_in_flight === 32;
 }
 
+/** Datastore-probe readiness fields (/readyz D1/A6). `datastores`, `embeddings`
+ *  and `degraded` arrive together when a probe source is registered; `retrieval`
+ *  and `lifecycle` are reported only when their producers exist. A server
+ *  without a probe source carries none of them. */
+const READINESS_PROBE_KEYS = ['datastores', 'embeddings', 'degraded'] as const;
+const READINESS_OPTIONAL_KEYS = ['retrieval', 'lifecycle'] as const;
+
+function hasClosedReadinessProbeShape(body: JsonRecord): boolean {
+  const present = READINESS_PROBE_KEYS.filter((key) => Object.prototype.hasOwnProperty.call(body, key));
+  if (present.length === 0) {
+    return !READINESS_OPTIONAL_KEYS.some((key) => Object.prototype.hasOwnProperty.call(body, key));
+  }
+  if (present.length !== READINESS_PROBE_KEYS.length) return false;
+  let datastores: JsonRecord;
+  try { datastores = record(body.datastores, 'readiness datastores'); }
+  catch { return false; }
+  if (!exactKeys(datastores, ['neo4j', 'redis'])
+    || datastores.neo4j !== 'ok' || datastores.redis !== 'ok') return false;
+  if (body.embeddings !== 'ok' && body.embeddings !== 'disabled' && body.embeddings !== 'degraded') return false;
+  if (!Array.isArray(body.degraded) || !body.degraded.every((entry) => typeof entry === 'string')) return false;
+  for (const key of READINESS_OPTIONAL_KEYS) {
+    if (!Object.prototype.hasOwnProperty.call(body, key)) continue;
+    try { record(body[key], `readiness ${key}`); }
+    catch { return false; }
+  }
+  return true;
+}
+
 function isExpectedDisposableMultiTenantDegradation(body: JsonRecord): boolean {
-  if (!exactKeys(body, [
+  const baseKeys = [
     'status', 'service', 'transport', 'active_sessions', 'registered_sessions',
     'auth_required', 'uptime_ms', 'consolidation_automation', 'admission_shadow',
     'retrieval_resolution',
-  ]) || body.status !== 'ready' || body.service !== 'memberry-mcp' || body.transport !== 'sse'
+  ];
+  const probeKeys = [...READINESS_PROBE_KEYS, ...READINESS_OPTIONAL_KEYS]
+    .filter((key) => Object.prototype.hasOwnProperty.call(body, key));
+  if (!exactKeys(body, [...baseKeys, ...probeKeys])
+    || body.status !== 'ready' || body.service !== 'memberry-mcp' || body.transport !== 'sse'
     || body.auth_required !== true || !isNonnegativeSafeInteger(body.active_sessions)
     || !isNonnegativeSafeInteger(body.registered_sessions) || body.active_sessions !== body.registered_sessions
     || typeof body.uptime_ms !== 'number' || !Number.isFinite(body.uptime_ms) || body.uptime_ms < 0
     || !hasClosedAdmissionShadowShape(body.admission_shadow)
-    || !hasClosedRetrievalResolutionStatusV1(body.retrieval_resolution)) return false;
+    || !hasClosedRetrievalResolutionStatusV1(body.retrieval_resolution)
+    || !hasClosedReadinessProbeShape(body)) return false;
   let automation: JsonRecord;
   try { automation = record(body.consolidation_automation, 'consolidation automation'); }
   catch { return false; }
