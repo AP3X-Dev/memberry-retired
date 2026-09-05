@@ -377,6 +377,7 @@ packages/retrieval/src/__tests__/scoped-entity-resolver.test.ts
 packages/retrieval/src/__tests__/scoring.test.ts
 packages/retrieval/src/__tests__/served-reranker.test.ts
 packages/retrieval/src/__tests__/tools.code-plane.test.ts
+packages/retrieval/src/__tests__/tools.entity-not-found-fallback.test.ts
 packages/retrieval/src/__tests__/tools.multihop.test.ts
 packages/retrieval/src/__tests__/tools.test.ts
 packages/retrieval/src/__tests__/tools.unanchored-routing.test.ts
