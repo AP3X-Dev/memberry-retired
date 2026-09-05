@@ -119,7 +119,21 @@ floors, `LIMITATIONS.md`), PR #149 (ranked-v2 trace stays representable when the
 RET-Q-004 pin fires) and PR #150 (twelve real `berry_load` outcome cases plus a
 `berry_load`-aware probe), then deploy.
 
-**Exact deployed runtime pin is now `febbad0d0800191cf0b397919cc1c0261123a780`**
+**Update 2026-09-05: deployed pin is now `037247cb`** (PR #152 gives the in-process
+lifecycle pass a writable export root — every pass had failed EACCES on the read-only
+`/app`; PR #153 carries workspace package names as entity aliases). Same day, owner
+delegated B-1 and B-2: Neo4j on Cerebro runs heap 1g, page cache 512m, container limit
+5g with the JVM Vector API module, and the memberry architecture was re-ingested twice.
+Resolver probe 16/54 (29.6%) → 33/54 (61.1%); package names 0/10 → 9/10; directories
+2/14 → 11/14; symbol hints still 0/10 (B-3). Code plane warm and idle, 38 cases:
+Answer@5 0.8421, MRR 0.6209, p95 1.13 s, zero errors. Memory gate 46/46, Answer@5
+0.7391, MRR 0.4495. Lifecycle pass: 46 scopes, zero failures. Measurement correction:
+the "2–3 s warm vector query" figure elsewhere in this file was cypher-shell JVM
+startup; in-process the index answers in 60–370 ms, and the real constraint is the 2 GB
+memory-mapped vector index that lives outside the page cache — keep the page cache
+small and the container limit large.
+
+**Exact deployed runtime pin was `febbad0d0800191cf0b397919cc1c0261123a780`**
 (image `sha256:6257c234729a08d28eda39e151e53c708eb61a03ade468737d6a80b5fb540355`,
 rollback tag `memberry:rollback-slices-7538337b-20260904`). Verify:
 `ssh cerebro@192.168.0.25 "git -C /home/cerebro/projects/memberry rev-parse --short HEAD"`
@@ -140,8 +154,8 @@ cases is the regression guard: Answer@5 0.7174 / MRR 0.4462 must not drop.
 Open slices, in order (state file: private `docs/agent-runs/slices-2026-09-04.md`):
 
 1. Hardening loop tail — items 16–19, 20b, 21–33 (small, file:line anchored).
-2. **Owner:** B-1 Neo4j page cache/heap ≥ 1 GB and container limit on Cerebro,
-   then B-2 re-ingest the memberry architecture. Unblocks every code-plane number.
+2. ~~B-1 / B-2~~ DONE 2026-09-05 (see update above). Remaining: B-3 symbol-hint
+   routing decision; scanner still MERGEs junk modules (`dist`, `src`, `packages`).
 3. Finish the instrument: ~13 more adjudicated memory cases; re-baseline EVAL-001.
 4. Query-aware anchored candidate selection (RL-021) — the first retrieval change
    the new cases can measure.
