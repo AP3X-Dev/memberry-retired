@@ -111,6 +111,7 @@ services:
       # IDX-002A: rank `variable` and test-path symbols last within the window
       # code search already returned. Unset = the fused order, unchanged.
       MEMBERRY_KIND_RANK_V1: ${MEMBERRY_KIND_RANK_V1:-}
+      MEMBERRY_MEMORY_RANK_V2: ${MEMBERRY_MEMORY_RANK_V2:-}
       # IDX-002B: project scope actually scopes — an un-stamped symbol needs path
       # evidence, and the semantic channel takes the project tag. Unset = the
       # prior behaviour, in which neither held.

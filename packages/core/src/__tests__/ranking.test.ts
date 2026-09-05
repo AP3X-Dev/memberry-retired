@@ -1,6 +1,6 @@
 // packages/core/src/__tests__/ranking.test.ts
 import { describe, it, expect } from 'vitest';
-import { rankMemories, budgetTokens, estimateTokens } from '../ranking.js';
+import { rankMemories, rankNormalizeRelevance, budgetTokens, estimateTokens } from '../ranking.js';
 import type { SemanticNode } from '../types.js';
 
 function makeNode(
@@ -125,6 +125,58 @@ describe('rankMemories', () => {
     const ranked = rankMemories([node], new Date('2025-01-10T00:00:00Z'));
 
     expect(Number.isFinite(ranked[0].score)).toBe(true);
+  });
+
+  // Slice 5. A three-week-old approved decision that the vector channel matched
+  // (relevance 0.75) versus a three-day-old scope-only node (default relevance 0.5).
+  // Under the bare exponential (RECENCY_DECAY_DAYS = 7) age wins ~9:1; under
+  // MEMBERRY_MEMORY_RANK_V2 the recency floor keeps relevance in charge.
+  const oldRelevant = () => makeNode({
+    id: 'old-relevant', confidence: 0.9, relevanceScore: 0.75,
+    updated_at: new Date(Date.now() - 21 * 86_400_000).toISOString(),
+  });
+  const newDefault = () => makeNode({
+    id: 'new-default', confidence: 0.9,
+    updated_at: new Date(Date.now() - 3 * 86_400_000).toISOString(),
+  });
+
+  it('without MEMBERRY_MEMORY_RANK_V2, a 3-day-old default-relevance node outranks a 21-day-old relevant one', () => {
+    const prev = process.env.MEMBERRY_MEMORY_RANK_V2;
+    delete process.env.MEMBERRY_MEMORY_RANK_V2;
+    try {
+      expect(rankMemories([oldRelevant(), newDefault()]).map((n) => n.id)).toEqual(['new-default', 'old-relevant']);
+    } finally {
+      if (prev !== undefined) process.env.MEMBERRY_MEMORY_RANK_V2 = prev;
+    }
+  });
+
+  it('with MEMBERRY_MEMORY_RANK_V2=1, the recency floor lets the relevant 21-day-old node win', () => {
+    const prev = process.env.MEMBERRY_MEMORY_RANK_V2;
+    process.env.MEMBERRY_MEMORY_RANK_V2 = '1';
+    try {
+      const ranked = rankMemories([newDefault(), oldRelevant()]);
+      expect(ranked.map((n) => n.id)).toEqual(['old-relevant', 'new-default']);
+      // floor 0.95: a node of infinite age keeps 95% of its recency weight
+      const ancient = rankMemories([makeNode({ id: 'ancient', confidence: 1, relevanceScore: 1, updated_at: '2000-01-01T00:00:00.000Z' })]);
+      expect(ancient[0].score).toBeCloseTo(0.95, 5);
+    } finally {
+      if (prev === undefined) delete process.env.MEMBERRY_MEMORY_RANK_V2; else process.env.MEMBERRY_MEMORY_RANK_V2 = prev;
+    }
+  });
+
+  it('rankNormalizeRelevance is identity without the flag and rank-linear 1.0..0.5 with it', () => {
+    const hits = [{ id: 'a', score: 0.815 }, { id: 'b', score: 0.809 }, { id: 'c', score: 0.79 }];
+    const prev = process.env.MEMBERRY_MEMORY_RANK_V2;
+    delete process.env.MEMBERRY_MEMORY_RANK_V2;
+    try {
+      expect(rankNormalizeRelevance(hits)).toBe(hits);
+      process.env.MEMBERRY_MEMORY_RANK_V2 = '1';
+      expect(rankNormalizeRelevance(hits).map((h) => h.score)).toEqual([1, 0.75, 0.5]);
+      expect(rankNormalizeRelevance([hits[0]]).map((h) => h.score)).toEqual([1]);
+      expect(rankNormalizeRelevance([])).toEqual([]);
+    } finally {
+      if (prev === undefined) delete process.env.MEMBERRY_MEMORY_RANK_V2; else process.env.MEMBERRY_MEMORY_RANK_V2 = prev;
+    }
   });
 
   it('returns empty array for empty input', () => {
