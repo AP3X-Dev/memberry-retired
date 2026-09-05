@@ -3,7 +3,7 @@ export function assertWikiTenantSafe(
   command: string,
   tenantTokens = process.env['MEMBERRY_TENANT_TOKENS'],
 ): void {
-  if (tenantTokens?.trim() && ['compile', 'serve', 'build'].includes(command)) {
+  if (tenantTokens?.trim() && ['compile', 'serve', 'build', 'lint'].includes(command)) {
     throw new Error(
       'Wiki compile/viewer is disabled in shared logical multi-tenant mode because generation is not tenant-qualified.',
     );

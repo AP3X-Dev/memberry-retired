@@ -225,6 +225,30 @@ describe('ConsolidationEngine promote path', () => {
     expect(neo4j.semantic.promoteFromEpisodic).not.toHaveBeenCalled();
   });
 
+  it('C5: a failed tenant read skips the batch as tenant_unresolved instead of promoting into the default tenant', async () => {
+    const redis = emptyRedis();
+    const neo4j = neo4jWith(vi.fn().mockResolvedValue(promotable));
+    neo4j.episodic = {
+      ...neo4j.episodic,
+      getTenantsByIds: vi.fn().mockRejectedValue(new Error('neo4j transient')),
+    } as never;
+    const llm = llmReturning({ content: 'Solid claim.', confidence: 0.9, decay_class: 'stable' });
+    const config = { ...CONFIG, consolidation: { ...CONFIG.consolidation, autoApply: true } };
+
+    const result = await new ConsolidationEngine(
+      redis as never,
+      neo4j as never,
+      config,
+      llm as never,
+    ).run('project:test');
+
+    expect(result.skipped).toBe(false);
+    expect(result.proposals).toHaveLength(1);
+    expect(result.applied).toHaveLength(0);
+    expect(result.skipped_tenant_unresolved).toBe(1);
+    expect(neo4j.semantic.promoteFromEpisodic).not.toHaveBeenCalled();
+  });
+
   it('still scans without an LLM but leaves ordinary recurrence candidates inert', async () => {
     const findPromotable = vi.fn().mockResolvedValue(promotable);
     const engine = new ConsolidationEngine(emptyRedis() as never, neo4jWith(findPromotable) as never, CONFIG);
@@ -256,6 +280,7 @@ describe('ConsolidationEngine promote path', () => {
       ['decision-1'],
       expect.objectContaining({ memory_type: 'decision', confidence: 0.9 }),
       'default',
+      expect.stringMatching(/^promoted:/),
     );
   });
 

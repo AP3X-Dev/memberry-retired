@@ -29,7 +29,7 @@ export { redactSecrets, redactValue } from './redact.js';
 export { renderToMarkdown, parseFromMarkdown, diffEntries } from './markdown.js';
 export type { DiffResult, MarkdownEntry } from './markdown.js';
 export { exportAll, exportFiltered } from './export.js';
-export type { ExportResult, ExportFilter } from './export.js';
+export type { ExportResult, ExportFilter, ExportOptions } from './export.js';
 export { importFromPath } from './import.js';
 export type { ImportOptions, ImportResult, ImportStrategy } from './import.js';
 export { BootstrapGraphService, semanticDedupeKey } from './bootstrap-graph.js';
@@ -78,6 +78,9 @@ export {
 } from './config/settings.js';
 export type { AmpSettings, HookSettings, ResolvedNumber, SettingSource } from './config/settings.js';
 export { getConfigStatus } from './config/status.js';
+export { parseBoolFlag } from './config/bool-flag.js';
+export { MEMBERRY_FLAGS, warnUnknownMemberryEnv } from './config/flags.js';
+export type { MemberryFlag, MemberryFlagKind, MemberryFlagOwner } from './config/flags.js';
 export type { ConfigStatus } from './config/status.js';
 export {
   DECAY_HALF_LIVES_DAYS,
@@ -98,6 +101,8 @@ export type {
   UsageInput,
 } from './lifecycle.js';
 export { HebbianEngine, HEBBIAN_DRAIN_CAP_RECORDS } from './hebbian.js';
+export { runLifecyclePass } from './lifecycle-pass.js';
+export type { LifecyclePassOptions, LifecyclePassResult } from './lifecycle-pass.js';
 export type {
   HebbianEngineDeps,
   HebbianGraphPort,

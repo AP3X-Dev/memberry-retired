@@ -28,6 +28,8 @@ export interface BootstrapEntity {
   description?: string;
   /** Parent entity name — creates a CONTAINS relationship */
   parent?: string;
+  /** Confined absolute ingest root (project entities only); overwritten on every ingest */
+  root_path?: string;
 }
 
 export interface BootstrapSemantic {
@@ -81,6 +83,11 @@ function canonicalBootstrapProjectScope(projectTag: string): string {
   }
   return scope;
 }
+
+// Relationship types cannot be Cypher parameters, so mergeRelationship
+// interpolates them (audit C7). bootstrap() only ever emits CONTAINS; anything
+// else is rejected before a query string is built.
+const BOOTSTRAP_RELATION_TYPES: ReadonlySet<string> = new Set(['CONTAINS']);
 
 // ─── Service ─────────────────────────────────────────────────────────────────
 
@@ -305,6 +312,10 @@ export class BootstrapGraphService {
     result: BootstrapResult,
     projectScope?: string,
   ): Promise<string> {
+    // Item 14a: overwrite (not coalesce) — the latest confined ingest root is
+    // the truth. Clause is omitted entirely when absent so the query text is
+    // unchanged for callers that never set it.
+    const rootPathClause = entity.root_path !== undefined ? ' SET e.root_path = $rootPath' : '';
     const res = await session.run(
       `MERGE (e:Entity {name: $name})
        ON CREATE SET e.id = $id, e.type = $type, e.description = $description,
@@ -314,7 +325,7 @@ export class BootstrapGraphService {
                     e.project_scope = CASE
                       WHEN $projectScope IS NOT NULL AND e.project_scope IS NULL THEN $projectScope
                       ELSE e.project_scope
-                    END
+                    END${rootPathClause}
        RETURN e.id AS id, e.created_at = $now AS isNew,
               e.project_scope AS storedProjectScope`,
       {
@@ -324,6 +335,7 @@ export class BootstrapGraphService {
         description: entity.description ?? null,
         projectScope: projectScope ?? null,
         now: new Date().toISOString(),
+        ...(entity.root_path !== undefined ? { rootPath: entity.root_path } : {}),
       },
     );
     const storedProjectScope = res.records[0].get('storedProjectScope') as unknown;
@@ -427,7 +439,11 @@ export class BootstrapGraphService {
     relType: string,
     result: BootstrapResult,
   ): Promise<void> {
-    // Relationship types can't be parameterized in Cypher
+    // Relationship types can't be parameterized in Cypher; the allowlist check
+    // is what makes interpolating one safe. Value-free error on purpose.
+    if (!BOOTSTRAP_RELATION_TYPES.has(relType)) {
+      throw new Error('invalid_relationship_type');
+    }
     await session.run(
       `MATCH (a:Entity {id: $fromId}), (b:Entity {id: $toId})
        MERGE (a)-[:${relType}]->(b)`,

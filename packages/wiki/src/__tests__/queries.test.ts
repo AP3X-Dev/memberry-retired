@@ -532,3 +532,99 @@ describe('fetchRecentEpisodics', () => {
     expect(cypher).toContain('ep.scope AS scope, ep.tags AS tags');
   });
 });
+
+// ─── Tenant predicate on every Semantic/Episodic read (audit C3) ──────────────
+
+type RunCall = { query: string; params: Record<string, unknown> };
+
+function recordingDriver(rows: ReturnType<typeof mockRecord>[] = []): { driver: Driver; calls: RunCall[] } {
+  const calls: RunCall[] = [];
+  const session = {
+    run: vi.fn(async (query: string, params: Record<string, unknown> = {}) => {
+      calls.push({ query, params });
+      return mockResult(rows);
+    }),
+    close: vi.fn(async () => {}),
+  } as unknown as Session;
+  return { driver: { session: vi.fn(() => session) } as unknown as Driver, calls };
+}
+
+describe('tenant predicate on Semantic/Episodic reads', () => {
+  const TENANT = 'tenant-a';
+  const ENTITY = [{ id: 'ent-1', name: 'thing' }];
+  // Every exported query that matches a Semantic or Episodic node. A new fetch
+  // that touches those labels must be added here (and must carry $tenantId).
+  const cases: Array<[string, (q: typeof import('../queries.js'), d: Driver) => Promise<unknown>]> = [
+    ['fetchEpisodicProjectScopes', (q, d) => q.fetchEpisodicProjectScopes(d, TENANT)],
+    ['fetchEntitiesModifiedByProject', (q, d) => q.fetchEntitiesModifiedByProject(d, 'p', TENANT)],
+    ['fetchSemanticsForEntity', (q, d) => q.fetchSemanticsForEntity(d, 'thing', TENANT)],
+    ['fetchSemanticCountForEntity', (q, d) => q.fetchSemanticCountForEntity(d, 'thing', TENANT)],
+    ['fetchAllSemantics', (q, d) => q.fetchAllSemantics(d, TENANT)],
+    ['fetchEpisodicsForProject', (q, d) => q.fetchEpisodicsForProject(d, 'p', TENANT)],
+    ['fetchEpisodicsForEntity', (q, d) => q.fetchEpisodicsForEntity(d, 'thing', 'p', 'ent-1', TENANT)],
+    ['fetchEpisodicsForEntities', (q, d) => q.fetchEpisodicsForEntities(d, ENTITY, 'p', TENANT)],
+    ['fetchRecentEpisodics', (q, d) => q.fetchRecentEpisodics(d, 10, TENANT)],
+    ['fetchBacklinks', (q, d) => q.fetchBacklinks(d, 'thing', TENANT)],
+    ['fetchClaimsForSource', (q, d) => q.fetchClaimsForSource(d, 'src-1', TENANT)],
+    ['fetchAllTags', (q, d) => q.fetchAllTags(d, TENANT)],
+    ['fetchSemanticsForTag', (q, d) => q.fetchSemanticsForTag(d, 'tag', TENANT)],
+    ['fetchInboundLinkCount', (q, d) => q.fetchInboundLinkCount(d, 'thing', TENANT)],
+    ['fetchSourcesForEntity', (q, d) => q.fetchSourcesForEntity(d, 'thing', TENANT)],
+  ];
+
+  it.each(cases)('%s carries $tenantId on every Semantic/Episodic MATCH', async (_name, call) => {
+    const queries = await import('../queries.js');
+    const { driver, calls } = recordingDriver();
+    await call(queries, driver);
+    expect(calls.length).toBeGreaterThan(0);
+    for (const { query, params } of calls) {
+      const sites = (query.match(/MATCH \((s:Semantic|ep:Episodic)\)/g) ?? []).length;
+      expect(sites).toBeGreaterThan(0);
+      const guarded = (query.match(/\b(s|ep)\.tenant_id = \$tenantId/g) ?? []).length;
+      expect(guarded).toBe(sites);
+      expect(params.tenantId).toBe(TENANT);
+      expect(params.defaultTenant).toBe('default');
+    }
+  });
+
+  it('every exported fetch that mentions Semantic/Episodic is in the table', async () => {
+    const queries = await import('../queries.js');
+    const src = await import('node:fs').then((fs) => fs.readFileSync(new URL('../queries.ts', import.meta.url), 'utf8'));
+    const covered = new Set(cases.map(([name]) => name));
+    for (const name of Object.keys(queries).filter((k) => k.startsWith('fetch'))) {
+      const body = src.slice(src.indexOf(`export async function ${name}(`));
+      const end = body.indexOf('\nexport ', 1);
+      const fn = end === -1 ? body : body.slice(0, end);
+      if (/\((s:Semantic|ep:Episodic)\)/.test(fn)) expect(covered, `${name} missing from tenant table`).toContain(name);
+    }
+  });
+
+  it('defaults to the default tenant so existing callers keep single-tenant behaviour', async () => {
+    const { fetchAllSemantics } = await import('../queries.js');
+    const { driver, calls } = recordingDriver();
+    await fetchAllSemantics(driver);
+    expect(calls[0].params).toMatchObject({ tenantId: 'default', defaultTenant: 'default' });
+  });
+
+  it('two-tenant fixture: tenant a sees rows, tenant b sees none', async () => {
+    const { fetchAllSemantics, fetchEpisodicsForProject } = await import('../queries.js');
+    const row = mockRecord({
+      id: 'x', content: 'secret-a', confidence: 1, memory_type: null, tags: [], scope: null, entities: [],
+      task: 't', outcome: null, session_id: 's', created_at: '2026-01-01',
+    });
+    const session = {
+      run: vi.fn(async (query: string, params: Record<string, unknown> = {}) => {
+        const alias = query.includes('(s:Semantic)') ? 's' : 'ep';
+        const guarded = query.includes(`${alias}.tenant_id = $tenantId OR (${alias}.tenant_id IS NULL AND $tenantId = $defaultTenant)`);
+        return mockResult(guarded && params.tenantId === 'a' ? [row] : []);
+      }),
+      close: vi.fn(async () => {}),
+    } as unknown as Session;
+    const driver = { session: vi.fn(() => session) } as unknown as Driver;
+
+    expect(await fetchAllSemantics(driver, 'a')).toHaveLength(1);
+    expect(await fetchAllSemantics(driver, 'b')).toHaveLength(0);
+    expect(await fetchEpisodicsForProject(driver, 'p', 'a')).toHaveLength(1);
+    expect(await fetchEpisodicsForProject(driver, 'p', 'b')).toHaveLength(0);
+  });
+});

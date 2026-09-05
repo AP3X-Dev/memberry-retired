@@ -259,15 +259,26 @@ export class AMPService {
       }
     }
 
-    // Auto-placeholder so the wiki picks up the project immediately.
+    // Auto-placeholder so the wiki picks up the project immediately. C13: this
+    // must succeed before the episode is written — an episode tagged with a
+    // project whose Entity does not exist is invisible to every
+    // entityProjectFilter-scoped query and to the wiki (acknowledged-but-lost).
+    // Retry once for transient faults, then fail the store with a value-free
+    // error; store() releases the dedup marker on the way out.
     if (this.neo4j.entity) {
+      const description = 'Auto-created from berry_store on first reference';
       try {
-        await this.neo4j.entity.upsertProject(projectName, 'Auto-created from berry_store on first reference');
-        console.error(`[memberry-store] INFO: auto-bootstrapped placeholder project Entity for "${canonical}". Run berry_bootstrap with full module list when ready.`);
-        this.knownProjectsCache = null; // invalidate
+        try {
+          await this.neo4j.entity.upsertProject(projectName, description);
+        } catch {
+          await this.neo4j.entity.upsertProject(projectName, description);
+        }
       } catch (err) {
-        console.error(`[memberry-store] WARN: failed to auto-create placeholder for "${canonical}":`, err instanceof Error ? err.message : err);
+        console.error(`[memberry-store] ERROR: failed to auto-create placeholder for "${canonical}" after retry:`, err instanceof Error ? err.message : err);
+        throw new Error('project_entity_unavailable');
       }
+      console.error(`[memberry-store] INFO: auto-bootstrapped placeholder project Entity for "${canonical}". Run berry_bootstrap with full module list when ready.`);
+      this.knownProjectsCache = null; // invalidate
     }
     return { tag: canonical, isNew: true };
   }

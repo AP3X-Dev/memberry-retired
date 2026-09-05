@@ -4,8 +4,10 @@
 import { z } from 'zod';
 import { DistributedLock, ProposalStore } from '@memberry/redis';
 import { runMigrations, checkVectorIndexDimensions, checkVectorIndexCoverage, ProvenanceTraversal } from '@memberry/neo4j';
-import { ConsolidationEngine, BootstrapGraphService, createCoreServices, buildDreamEngine, buildExtractionConsumer, readEnv, defaultExportPath, DEFAULT_TENANT } from '@memberry/core';
-import type { CoreServices } from '@memberry/core';
+import fs from 'node:fs';
+import path from 'node:path';
+import { ConsolidationEngine, BootstrapGraphService, createCoreServices, buildDreamEngine, buildExtractionConsumer, readEnv, defaultExportPath, DEFAULT_TENANT, resolveLifecycleConfig, runLifecyclePass, parseBoolFlag, getAllowedBaseDir, warnUnknownMemberryEnv } from '@memberry/core';
+import type { CoreServices, LifecyclePassResult } from '@memberry/core';
 import { setServiceInstances, setTenantContainer } from './tools.js';
 import {
   initResearchSchema,
@@ -82,6 +84,7 @@ import {
   setGraphServiceInstances,
 } from '@memberry/graph';
 import { registerAdmissionShadowStatusSources } from './admission-shadow-status.js';
+import { registerReadinessProbeSource, type LifecycleReadiness } from './server.js';
 
 export interface BootstrapHandles {
   /** Call to disconnect Redis and Neo4j cleanly. */
@@ -187,7 +190,159 @@ export function parseTenantDatastores(
   return result.data;
 }
 
+// ─── MEM-006 in-process scheduler (item 13a) ─────────────────────────────────
+// Under Docker nothing installs the systemd timer, so the CLI-only lifecycle
+// pass never ran: memory never decayed/archived and the hebbian feedback ring
+// grew unbounded. The server now runs the SAME `runLifecyclePass` on a timer.
+
+export interface LifecycleSchedulerDeps {
+  run: () => Promise<LifecyclePassResult>;
+  intervalMs: number;
+  log?: (line: string) => void;
+}
+
+export function startLifecycleScheduler(deps: LifecycleSchedulerDeps): { stop(): void; status(): LifecycleReadiness } {
+  const log = deps.log ?? ((line) => console.error(line));
+  let running = false;
+  // 13b: last-pass record surfaced on /readyz `lifecycle`.
+  let status: LifecycleReadiness = { mode: 'live', last_run_at: null, last_result: 'never' };
+  const tick = async (): Promise<void> => {
+    if (running) {
+      log('[lifecycle] skipped: previous pass still running');
+      status = { ...status, last_result: 'skipped' };
+      return;
+    }
+    running = true;
+    const startedAt = new Date().toISOString();
+    try {
+      const pass = await deps.run();
+      log(
+        `[lifecycle] pass complete: scopes=${pass.scopes.length} failures=${pass.failures.length}`
+        + (pass.hebbian ? ` hebbian_tenants=${pass.hebbian.tenants.length} hebbian_failures=${pass.hebbian.failures.length}` : '')
+        + (pass.anti_entropy ? ` anti_entropy_failures=${pass.anti_entropy.failures.length}` : ''),
+      );
+      status = {
+        mode: 'live', last_run_at: startedAt, last_result: 'ok',
+        ...(pass.hebbian ? { hebbian_drained: pass.hebbian.tenants.reduce((n, t) => n + t.drained, 0) } : {}),
+        ...(pass.anti_entropy ? { anti_entropy: { ...pass.anti_entropy.extraction, failures: pass.anti_entropy.failures.length } } : {}),
+      };
+    } catch (err) {
+      // Class only: a lifecycle error message can carry scope names/ids.
+      const errorClass = err instanceof Error ? err.constructor.name : typeof err;
+      log(`[lifecycle] pass failed: ${errorClass}`);
+      status = { mode: 'live', last_run_at: startedAt, last_result: 'failed', last_error_class: errorClass };
+    } finally {
+      running = false;
+    }
+  };
+  const unref = (t: ReturnType<typeof setTimeout>) => { if (typeof t.unref === 'function') t.unref(); };
+  let interval: ReturnType<typeof setInterval> | undefined;
+  const initial = setTimeout(() => {
+    void tick();
+    interval = setInterval(() => { void tick(); }, deps.intervalMs);
+    unref(interval);
+  }, 5 * 60_000);
+  unref(initial);
+  return {
+    stop() {
+      clearTimeout(initial);
+      if (interval) clearInterval(interval);
+    },
+    status: () => status,
+  };
+}
+
+export const DEFAULT_LIFECYCLE_INTERVAL_MS = 24 * 3_600_000;
+export const MIN_LIFECYCLE_INTERVAL_MS = 3_600_000;
+
+/** MEMBERRY_LIFECYCLE_INTERVAL_MS: unset → default silently; non-numeric → default,
+ *  below minimum → minimum; both substitutions warn once at boot (13b). */
+export function parseLifecycleIntervalMs(
+  raw: string | undefined,
+  log: (line: string) => void = (line) => console.error(line),
+): number {
+  if (raw === undefined) return DEFAULT_LIFECYCLE_INTERVAL_MS;
+  const parsed = Number.parseInt(raw, 10);
+  if (!Number.isFinite(parsed)) {
+    log(`[lifecycle] MEMBERRY_LIFECYCLE_INTERVAL_MS invalid, using default ${DEFAULT_LIFECYCLE_INTERVAL_MS}`);
+    return DEFAULT_LIFECYCLE_INTERVAL_MS;
+  }
+  if (parsed < MIN_LIFECYCLE_INTERVAL_MS) {
+    log(`[lifecycle] MEMBERRY_LIFECYCLE_INTERVAL_MS below minimum, using ${MIN_LIFECYCLE_INTERVAL_MS}`);
+    return MIN_LIFECYCLE_INTERVAL_MS;
+  }
+  return parsed;
+}
+
+// ─── Code watch on boot (item 14b, audit A3) ─────────────────────────────────
+// The CodeWatcher was constructed at boot but only berry_code_watch ever armed
+// it, so after a restart the code index went stale until an agent asked. Roots
+// are the root_path persisted on project entities by ingest (item 14a); each is
+// re-confined against the allowed base and checked on disk before watching.
+// Logs carry the project NAME only, never the path.
+
+/** Structural subset of neo4j-driver's Driver (mcp has no direct driver dependency). */
+interface ProjectRootReader {
+  session(): {
+    run(query: string): Promise<{ records: Array<{ get(key: string): unknown }> }>;
+    close(): Promise<unknown>;
+  };
+}
+
+export interface CodeWatchOnBootDeps {
+  driver: ProjectRootReader;
+  watcher: { watch(root: string): unknown };
+  allowedBaseDir: string;
+  /** Resolves true when `p` exists and is a directory. */
+  exists?: (p: string) => Promise<boolean>;
+  log?: (line: string) => void;
+}
+
+async function isDirectory(p: string): Promise<boolean> {
+  try { return (await fs.promises.stat(p)).isDirectory(); } catch { return false; }
+}
+
+export async function startCodeWatchOnBoot(deps: CodeWatchOnBootDeps): Promise<void> {
+  const log = deps.log ?? ((line) => console.error(line));
+  const exists = deps.exists ?? isDirectory;
+  const base = path.resolve(deps.allowedBaseDir);
+  let roots: Array<{ name: string; root: string }>;
+  try {
+    const session = deps.driver.session();
+    try {
+      const result = await session.run(
+        `MATCH (e:Entity {type: 'project'}) WHERE e.root_path IS NOT NULL RETURN e.name AS name, e.root_path AS root`,
+      );
+      roots = result.records.map((r) => ({ name: String(r.get('name')), root: String(r.get('root')) }));
+    } finally {
+      await session.close();
+    }
+  } catch (err) {
+    log(`[code-watch] boot watch failed: ${err instanceof Error ? err.constructor.name : typeof err}`);
+    return;
+  }
+  for (const { name, root } of roots) {
+    const abs = path.resolve(root);
+    if (!abs.startsWith(base + path.sep) && abs !== base) {
+      log(`[code-watch] root outside allowed base, skipped: ${name}`);
+      continue;
+    }
+    if (!(await exists(abs))) {
+      log(`[code-watch] root missing on disk, skipped: ${name}`);
+      continue;
+    }
+    try {
+      deps.watcher.watch(abs);
+      log(`[code-watch] watching ${name}`);
+    } catch (err) {
+      log(`[code-watch] watch failed: ${err instanceof Error ? err.constructor.name : typeof err}, skipped: ${name}`);
+    }
+  }
+}
+
 export async function bootstrap(): Promise<BootstrapHandles> {
+  // Item 20a (audit C10): one warning per MEMBERRY_* env not in MEMBERRY_FLAGS. Never throws.
+  warnUnknownMemberryEnv(process.env, (line) => console.error(line));
   const queryPlannerEnabled = process.env['MEMBERRY_QUERY_PLANNER_V1'] === '1';
   const candidateChannelEnabled = process.env['MEMBERRY_CANDIDATE_CHANNEL_V1'] === '1';
   // RET-007 v4: default-off second retrieval pass over the memory channel.
@@ -372,7 +527,7 @@ export async function bootstrap(): Promise<BootstrapHandles> {
   // own isolated coordinator below.
   // Configure the compiler before evaluating enablement so the guard checks the
   // actual env-resolved output directory (not its /app/wiki initial default).
-  const rawWikiCompiler = new WikiCompiler(driver);
+  const rawWikiCompiler = new WikiCompiler(driver, { tenantId: DEFAULT_TENANT });
   configureWikiAutorefresh({
     recompile: (outputDir: string) => rawWikiCompiler.compile(outputDir),
     outputDir: resolveWikiOutputDir(),
@@ -764,6 +919,30 @@ export async function bootstrap(): Promise<BootstrapHandles> {
   consolidationCoordinator.start();
   for (const coordinator of dedicatedTenantCoordinators) coordinator.start();
 
+  // MEM-006 retention/archive pass, in-process, behind the existing flag.
+  // Flag not live => nothing is constructed (CLI/systemd path unchanged).
+  const lifecycleConfig = resolveLifecycleConfig(defaultExportPath());
+  const lifecycleScheduler = lifecycleConfig.mode === 'live'
+    ? startLifecycleScheduler({
+        run: () => runLifecyclePass(core, { config: lifecycleConfig }),
+        // MEMBERRY_LIFECYCLE_INTERVAL_MS — pass cadence in ms; default 24h, minimum 1h (flag inventory: item 20a).
+        intervalMs: parseLifecycleIntervalMs(readEnv('MEMBERRY_LIFECYCLE_INTERVAL_MS')),
+      })
+    : null;
+  if (lifecycleScheduler) console.error('[memberry-mcp] Lifecycle scheduler started (first pass in 5 min)');
+
+  // Item 14b: re-arm the code watcher for persisted project roots. Fire-and-
+  // forget: never awaited, errors are logged inside the helper, flag unset =>
+  // the query never runs. shutdown() already calls codeWatcherService.stopAll().
+  // MEMBERRY_CODE_WATCH_ON_BOOT — watch persisted project root_paths at boot; loose bool, default off (flag inventory: item 20a).
+  if (parseBoolFlag(readEnv('MEMBERRY_CODE_WATCH_ON_BOOT'), false)) {
+    void startCodeWatchOnBoot({
+      driver,
+      watcher: codeWatcherService,
+      allowedBaseDir: getAllowedBaseDir(),
+    });
+  }
+
   if (status.degraded.length > 0) {
     console.error(`[memberry-mcp] DEGRADED MODE — ${status.degraded.length} issue(s):`);
     for (const issue of status.degraded) {
@@ -779,6 +958,30 @@ export async function bootstrap(): Promise<BootstrapHandles> {
     core.admissionShadow,
     ...dedicatedTenantCores.map((tenantCore) => tenantCore.admissionShadow),
   ]);
+  // D1/A6: /readyz probes the live datastores per request and echoes the
+  // degraded list computed above; embeddings state is reported, not fatal.
+  const unregisterReadinessProbe = registerReadinessProbeSource({
+    neo4j: driver,
+    redis,
+    embeddings: !openaiKey
+      ? 'disabled'
+      : (dimDrift.length > 0 || underCoveredVectorIndexes.length > 0) ? 'degraded' : 'ok',
+    degraded: status.degraded,
+    // C4: expose the collection-size probe window so an operator can see when
+    // RRF fusion is running on a stale or absent collection size.
+    retrieval: () => {
+      const probe = unifiedAssembler.collectionSizeStatus();
+      return {
+        collection_size: {
+          state: probe.state,
+          cached_at: probe.cachedAt,
+          ...(probe.lastErrorClass !== undefined ? { last_error_class: probe.lastErrorClass } : {}),
+        },
+      };
+    },
+    // 13b: last in-process lifecycle pass; no scheduler => disabled/never.
+    lifecycle: () => lifecycleScheduler?.status() ?? { mode: 'disabled', last_run_at: null, last_result: 'never' },
+  });
 
   return {
     ...(rerankerShadowCoordinator
@@ -788,6 +991,7 @@ export async function bootstrap(): Promise<BootstrapHandles> {
       if (rerankerShadowCoordinator) {
         try { await rerankerShadowCoordinator.shutdown(); } catch { /* best-effort */ }
       }
+      lifecycleScheduler?.stop();
       try { await consolidationCoordinator.stop(); } catch { /* best-effort */ }
       for (const coordinator of dedicatedTenantCoordinators) {
         try { await coordinator.stop(); } catch { /* best-effort */ }
@@ -800,6 +1004,7 @@ export async function bootstrap(): Promise<BootstrapHandles> {
       // best-effort shutdown behavior.
       try { await core.close(); } catch { /* already closed */ }
       unregisterAdmissionShadowStatus();
+      unregisterReadinessProbe();
     },
   };
 }

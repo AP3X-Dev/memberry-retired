@@ -40,6 +40,7 @@ import {
   fetchRecentEpisodics,
 } from './queries.js';
 import type { HierarchyRef } from './queries.js';
+import { DEFAULT_TENANT } from '@memberry/core';
 import {
   renderFrontmatter,
   renderEntityArticle,
@@ -305,6 +306,8 @@ const COMPILE_LOCK_TIMEOUT_MS = 35 * 60_000;
 const COMPILE_LOCK_RETRY_MS = 250;
 
 export interface WikiCompilerOptions {
+  /** Tenant whose Semantic/Episodic nodes are compiled (defaults to DEFAULT_TENANT). */
+  tenantId?: string;
   /** @internal Primarily exposed for deterministic lease-contention tests. */
   compileLockStaleMs?: number;
   /** @internal Primarily exposed for deterministic lease-contention tests. */
@@ -775,6 +778,7 @@ export class WikiCompiler {
     projectScope: string | null,
     result: CompileV2Result,
   ): Promise<CompileV2Result> {
+    const tenantId = this.options.tenantId ?? DEFAULT_TENANT;
     // Every compile targets a new private generation directory. No served tree
     // is cleared or mutated while requests are reading it.
     await mkdir(outputDir, { recursive: true });
@@ -782,7 +786,7 @@ export class WikiCompiler {
     // ── Phase 0: Pre-fetch shared data ─────────────────────────────
 
     // Fetch all semantics ONCE and build indexes for O(1) lookups
-    const allSemantics = (await fetchAllSemantics(this.driver))
+    const allSemantics = (await fetchAllSemantics(this.driver, tenantId))
       .filter((sem) => semanticMatchesScope(sem, projectScope));
 
     // Index: entity name (lowercase) → semantics ABOUT that entity
@@ -816,7 +820,7 @@ export class WikiCompiler {
 
     const projectEntities = (await fetchAllProjects(this.driver))
       .filter((project) => entityMatchesScope(project, projectScope));
-    const episodicOnlyScopes = (await fetchEpisodicProjectScopes(this.driver))
+    const episodicOnlyScopes = (await fetchEpisodicProjectScopes(this.driver, tenantId))
       .filter((scope) => !projectScope || sameProjectScope(scope, projectScope));
 
     // Build full project list: entity-based + episodic-only (virtual)
@@ -837,8 +841,8 @@ export class WikiCompiler {
 
       const [containedEntities, modifiedEntities, episodics] = await Promise.all([
         fetchProjectEntities(this.driver, projectName),
-        fetchEntitiesModifiedByProject(this.driver, projectScope),
-        fetchEpisodicsForProject(this.driver, projectScope),
+        fetchEntitiesModifiedByProject(this.driver, projectScope, tenantId),
+        fetchEpisodicsForProject(this.driver, projectScope, tenantId),
       ]);
 
       // Merge contained and modified entities, dedup by id
@@ -870,6 +874,7 @@ export class WikiCompiler {
         this.driver,
         entities.map((entity) => ({ id: entity.id, name: entity.name })),
         projectScope,
+        tenantId,
       );
       // OPT-58: feed the global map so Phase 2 reuses these results.
       for (const [entityId, eps] of entityEpisodicMap) entityEpisodicsById.set(entityId, eps);
@@ -915,7 +920,7 @@ export class WikiCompiler {
     // Memory-only projects (virtual): episodics, semantics, or both can establish
     // a project before an Entity node has been bootstrapped.
     for (const scope of episodicOnlyScopes) {
-      const episodics = await fetchEpisodicsForProject(this.driver, scope);
+      const episodics = await fetchEpisodicsForProject(this.driver, scope, tenantId);
       const semantics = allSemantics.filter((sem) => semanticMatchesScope(sem, scope));
       if (episodics.length === 0 && semantics.length === 0) continue;
 
@@ -963,12 +968,12 @@ export class WikiCompiler {
         const entityEpisodics = entityEpisodicsById.get(entity.id) ?? [];
         const [entitySemantics, hierarchy, backlinks, seeAlso, sources, inboundCount] =
           await Promise.all([
-            fetchSemanticsForEntity(this.driver, entity.name),
+            fetchSemanticsForEntity(this.driver, entity.name, tenantId),
             fetchHierarchy(this.driver, entity.id),
-            fetchBacklinks(this.driver, entity.name),
+            fetchBacklinks(this.driver, entity.name, tenantId),
             fetchRelatedEntities(this.driver, entity.name),
-            fetchSourcesForEntity(this.driver, entity.name),
-            fetchInboundLinkCount(this.driver, entity.name),
+            fetchSourcesForEntity(this.driver, entity.name, tenantId),
+            fetchInboundLinkCount(this.driver, entity.name, tenantId),
           ]);
         const semantics = entitySemantics.filter((sem) => {
           const scopes = semanticProjectScopes(sem);
@@ -1100,7 +1105,7 @@ export class WikiCompiler {
       const claimCounts = new Map<string, number>();
 
       for (const source of allSources) {
-        const claims = await fetchClaimsForSource(this.driver, source.id);
+        const claims = await fetchClaimsForSource(this.driver, source.id, tenantId);
         claimCounts.set(source.id, claims.length);
 
         const entityLinks = [...new Set(claims.flatMap((c) => c.entity_refs))];
@@ -1134,7 +1139,7 @@ export class WikiCompiler {
           count: sems.length,
           projects: [projectScope],
         }))
-      : await fetchAllTags(this.driver);
+      : await fetchAllTags(this.driver, tenantId);
     const qualifiedTags = allTags.filter((t) => projectScope ? t.count > 0 : (t.count >= 3 || t.projects.length >= 2));
 
     // Build tag→projects map from pre-fetched allSemantics (no extra query)
@@ -1247,7 +1252,7 @@ export class WikiCompiler {
       ...allProjectData.map((p) => slugify(p.entity.name)),
       ...episodicOnlyScopes.map((s) => slugify(s)),
     ])].filter(Boolean).sort((a, b) => b.length - a.length);
-    const recentEpisodics = (await fetchRecentEpisodics(this.driver, 50))
+    const recentEpisodics = (await fetchRecentEpisodics(this.driver, 50, tenantId))
       .map((ep) => ({ ...ep, project_scope: deriveEpisodicScope(ep, knownProjectSlugs) }))
       .filter((ep) => episodicMatchesScope(ep, projectScope));
     const recentMarkdown = renderRecentChanges(recentEpisodics);

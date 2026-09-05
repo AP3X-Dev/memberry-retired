@@ -4,9 +4,20 @@
 import type { Driver } from 'neo4j-driver';
 import neo4j from 'neo4j-driver';
 import type { EntityInfo, EpisodicEntry, SourceInfo, ResolvedClaim } from './types.js';
+import { DEFAULT_TENANT } from '@memberry/core';
 import { slugify } from './compile.js';
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
+
+/** Same predicate shape as core/export.ts and @memberry/neo4j reads (params: $tenantId, $defaultTenant).
+ *  Entity nodes carry no tenant_id, so only Semantic/Episodic aliases are guarded. */
+export function tenantWhere(alias: string): string {
+  return `(${alias}.tenant_id = $tenantId OR (${alias}.tenant_id IS NULL AND $tenantId = $defaultTenant))`;
+}
+
+export function tenantParams(tenantId: string): { tenantId: string; defaultTenant: string } {
+  return { tenantId: tenantId.trim() || DEFAULT_TENANT, defaultTenant: DEFAULT_TENANT };
+}
 
 function toNumber(val: unknown): number {
   if (typeof val === 'number') return val;
@@ -48,13 +59,14 @@ export async function fetchAllProjects(driver: Driver): Promise<EntityInfo[]> {
 /** Discover project scopes carried by memory but missing a project Entity.
  * The historical name is retained for API compatibility, but both Episodic and
  * Semantic nodes participate so a semantic-only scope can get a virtual wiki. */
-export async function fetchEpisodicProjectScopes(driver: Driver): Promise<string[]> {
+export async function fetchEpisodicProjectScopes(driver: Driver, tenantId: string = DEFAULT_TENANT): Promise<string[]> {
   const session = driver.session();
   try {
     const result = await session.run(
       `CALL {
          MATCH (ep:Episodic)
          WHERE coalesce(ep.archived, false) = false
+           AND ${tenantWhere('ep')}
          WITH ep,
               CASE WHEN ep.scope IS NOT NULL AND ep.scope STARTS WITH 'project:'
                    THEN [substring(ep.scope, 8)] ELSE [] END AS scopeNames,
@@ -67,6 +79,7 @@ export async function fetchEpisodicProjectScopes(driver: Driver): Promise<string
          MATCH (s:Semantic)
          WHERE NOT EXISTS { MATCH (:Semantic)-[:SUPERSEDES]->(s) }
            AND coalesce(s.archived, false) = false
+           AND ${tenantWhere('s')}
          WITH s,
               CASE WHEN s.scope IS NOT NULL AND s.scope STARTS WITH 'project:'
                    THEN [substring(s.scope, 8)] ELSE [] END AS scopeNames,
@@ -79,6 +92,7 @@ export async function fetchEpisodicProjectScopes(driver: Driver): Promise<string
        WHERE toLower(e.name) = toLower(proj)
        WITH proj WHERE e IS NULL
        RETURN proj ORDER BY proj`,
+      tenantParams(tenantId),
     );
     return result.records.map((r) => r.get('proj') as string).filter(Boolean);
   } finally {
@@ -115,7 +129,7 @@ export async function fetchProjectEntities(driver: Driver, projectName: string):
 }
 
 /** Entities linked via MODIFIED from episodics scoped to a project */
-export async function fetchEntitiesModifiedByProject(driver: Driver, projectScope: string): Promise<EntityInfo[]> {
+export async function fetchEntitiesModifiedByProject(driver: Driver, projectScope: string, tenantId: string = DEFAULT_TENANT): Promise<EntityInfo[]> {
   const session = driver.session();
   try {
     // gap-13: structured `ep.scope`/`ep.tags` (the canonical project association
@@ -131,10 +145,11 @@ export async function fetchEntitiesModifiedByProject(driver: Driver, projectScop
       `MATCH (ep:Episodic)-[:MODIFIED]->(e:Entity)
        WHERE (ep.scope = $canonTag OR $canonTag IN ep.tags OR ep.task CONTAINS $taskTag)
          AND coalesce(ep.archived, false) = false
+         AND ${tenantWhere('ep')}
        RETURN DISTINCT e.id AS id, e.name AS name, e.type AS type, e.description AS description,
               e.aliases AS aliases, e.created_at AS created_at, e.path AS path
        ORDER BY e.name`,
-      { canonTag, taskTag },
+      { canonTag, taskTag, ...tenantParams(tenantId) },
     );
     return result.records.map((r) => ({
       id: r.get('id') as string,
@@ -153,7 +168,7 @@ export async function fetchEntitiesModifiedByProject(driver: Driver, projectScop
 
 // ─── Semantic queries ───────────────────────────────────────────────────────
 
-export async function fetchSemanticsForEntity(driver: Driver, entityName: string): Promise<Array<{
+export async function fetchSemanticsForEntity(driver: Driver, entityName: string, tenantId: string = DEFAULT_TENANT): Promise<Array<{
   id: string; content: string; confidence: number; memory_type?: string; tags: string[]; scope?: string; updated_at: string; entity_refs: string[];
 }>> {
   const session = driver.session();
@@ -163,6 +178,7 @@ export async function fetchSemanticsForEntity(driver: Driver, entityName: string
        WHERE about.invalid_at IS NULL
          AND NOT EXISTS { MATCH (:Semantic)-[:SUPERSEDES]->(s) }
          AND coalesce(s.archived, false) = false
+         AND ${tenantWhere('s')}
        OPTIONAL MATCH (s)-[otherAbout:ABOUT]->(other:Entity)
        WHERE other.name <> $name AND otherAbout.invalid_at IS NULL
        RETURN s.id AS id, s.content AS content, s.confidence AS confidence,
@@ -170,7 +186,7 @@ export async function fetchSemanticsForEntity(driver: Driver, entityName: string
               s.tags AS tags, s.scope AS scope, s.updated_at AS updated_at,
               collect(DISTINCT other.name) AS entity_refs
        ORDER BY s.confidence DESC, s.updated_at DESC`,
-      { name: entityName },
+      { name: entityName, ...tenantParams(tenantId) },
     );
     return result.records.map((r) => ({
       id: r.get('id') as string,
@@ -187,7 +203,7 @@ export async function fetchSemanticsForEntity(driver: Driver, entityName: string
   }
 }
 
-export async function fetchSemanticCountForEntity(driver: Driver, entityName: string): Promise<number> {
+export async function fetchSemanticCountForEntity(driver: Driver, entityName: string, tenantId: string = DEFAULT_TENANT): Promise<number> {
   const session = driver.session();
   try {
     const result = await session.run(
@@ -195,8 +211,9 @@ export async function fetchSemanticCountForEntity(driver: Driver, entityName: st
        WHERE about.invalid_at IS NULL
          AND NOT EXISTS { MATCH (:Semantic)-[:SUPERSEDES]->(s) }
          AND coalesce(s.archived, false) = false
+         AND ${tenantWhere('s')}
        RETURN count(s) AS cnt`,
-      { name: entityName },
+      { name: entityName, ...tenantParams(tenantId) },
     );
     return toNumber(result.records[0]?.get('cnt') ?? 0);
   } finally {
@@ -204,7 +221,7 @@ export async function fetchSemanticCountForEntity(driver: Driver, entityName: st
   }
 }
 
-export async function fetchAllSemantics(driver: Driver): Promise<Array<{
+export async function fetchAllSemantics(driver: Driver, tenantId: string = DEFAULT_TENANT): Promise<Array<{
   id: string; content: string; confidence: number; memory_type?: string; tags: string[]; scope?: string; entities: string[];
 }>> {
   const session = driver.session();
@@ -213,12 +230,14 @@ export async function fetchAllSemantics(driver: Driver): Promise<Array<{
       `MATCH (s:Semantic)
        WHERE NOT EXISTS { MATCH (:Semantic)-[:SUPERSEDES]->(s) }
          AND coalesce(s.archived, false) = false
+         AND ${tenantWhere('s')}
        OPTIONAL MATCH (s)-[about:ABOUT]->(e:Entity)
        WHERE about.invalid_at IS NULL
        RETURN s.id AS id, s.content AS content, s.confidence AS confidence,
               s.memory_type AS memory_type,
               s.tags AS tags, s.scope AS scope, collect(DISTINCT e.name) AS entities
        ORDER BY s.confidence DESC`,
+      tenantParams(tenantId),
     );
     return result.records.map((r) => ({
       id: r.get('id') as string,
@@ -236,7 +255,7 @@ export async function fetchAllSemantics(driver: Driver): Promise<Array<{
 
 // ─── Episodic queries ───────────────────────────────────────────────────────
 
-export async function fetchEpisodicsForProject(driver: Driver, projectScope: string): Promise<EpisodicEntry[]> {
+export async function fetchEpisodicsForProject(driver: Driver, projectScope: string, tenantId: string = DEFAULT_TENANT): Promise<EpisodicEntry[]> {
   const session = driver.session();
   try {
     // gap-13: an episode belongs to this project when ANY of these hold —
@@ -254,11 +273,12 @@ export async function fetchEpisodicsForProject(driver: Driver, projectScope: str
       `MATCH (ep:Episodic)
        WHERE (ep.scope = $canonTag OR $canonTag IN ep.tags OR ep.task CONTAINS $taskTag)
          AND coalesce(ep.archived, false) = false
+         AND ${tenantWhere('ep')}
        RETURN ep.id AS id, ep.task AS task, ep.content AS content,
               ep.outcome AS outcome, ep.session_id AS session_id, ep.created_at AS created_at,
               ep.scope AS scope, ep.tags AS tags
        ORDER BY ep.created_at DESC`,
-      { canonTag, taskTag },
+      { canonTag, taskTag, ...tenantParams(tenantId) },
     );
     return result.records.map((r) => ({
       id: r.get('id') as string,
@@ -281,6 +301,7 @@ export async function fetchEpisodicsForEntity(
   entityName: string,
   projectScope: string,
   entityId?: string,
+  tenantId: string = DEFAULT_TENANT,
 ): Promise<EpisodicEntry[]> {
   const session = driver.session();
   try {
@@ -290,6 +311,7 @@ export async function fetchEpisodicsForEntity(
       `MATCH (ep:Episodic)
        WHERE (ep.scope = $canonTag OR $canonTag IN coalesce(ep.tags, []) OR ep.task CONTAINS $taskTag)
          AND coalesce(ep.archived, false) = false
+         AND ${tenantWhere('ep')}
          AND ((ep.task CONTAINS $name OR ep.content CONTAINS $name)
               OR ($entityId IS NOT NULL AND EXISTS { MATCH (ep)-[:MODIFIED]->(e:Entity {id: $entityId}) }))
        RETURN DISTINCT ep.id AS id, ep.task AS task, ep.content AS content,
@@ -297,7 +319,7 @@ export async function fetchEpisodicsForEntity(
               ep.scope AS scope, ep.tags AS tags
        ORDER BY ep.created_at DESC
        LIMIT 20`,
-      { name: entityName, entityId: entityId ?? null, canonTag, taskTag },
+      { name: entityName, entityId: entityId ?? null, canonTag, taskTag, ...tenantParams(tenantId) },
     );
     return result.records.map((r) => ({
       id: r.get('id') as string,
@@ -331,6 +353,7 @@ export async function fetchEpisodicsForEntities(
   driver: Driver,
   entities: Array<Pick<EntityInfo, 'id' | 'name'>>,
   projectScope: string,
+  tenantId: string = DEFAULT_TENANT,
 ): Promise<Map<string, EpisodicEntry[]>> {
   const grouped = new Map<string, EpisodicEntry[]>();
   if (entities.length === 0) return grouped;
@@ -348,6 +371,7 @@ export async function fetchEpisodicsForEntities(
          MATCH (ep:Episodic)
          WHERE (ep.scope = $canonTag OR $canonTag IN coalesce(ep.tags, []) OR ep.task CONTAINS $taskTag)
            AND coalesce(ep.archived, false) = false
+           AND ${tenantWhere('ep')}
            AND ((ep.task CONTAINS entity.name OR ep.content CONTAINS entity.name)
                 OR EXISTS { MATCH (ep)-[:MODIFIED]->(e:Entity) WHERE e.id = entity.id })
          RETURN DISTINCT ep.id AS id, ep.task AS task, ep.content AS content,
@@ -358,7 +382,7 @@ export async function fetchEpisodicsForEntities(
        }
        RETURN entity.id AS entity_id, entity.name AS name,
               id, task, content, outcome, session_id, created_at, scope, tags`,
-      { entities: uniqueEntities, canonTag, taskTag },
+      { entities: uniqueEntities, canonTag, taskTag, ...tenantParams(tenantId) },
     );
     for (const r of result.records) {
       const entityId = r.get('entity_id') as string;
@@ -387,18 +411,19 @@ export async function fetchEpisodicsForEntities(
   }
 }
 
-export async function fetchRecentEpisodics(driver: Driver, limit: number): Promise<EpisodicEntry[]> {
+export async function fetchRecentEpisodics(driver: Driver, limit: number, tenantId: string = DEFAULT_TENANT): Promise<EpisodicEntry[]> {
   const session = driver.session();
   try {
     const result = await session.run(
       `MATCH (ep:Episodic)
        WHERE coalesce(ep.archived, false) = false
+         AND ${tenantWhere('ep')}
        RETURN ep.id AS id, ep.task AS task, ep.content AS content,
               ep.outcome AS outcome, ep.session_id AS session_id, ep.created_at AS created_at,
               ep.scope AS scope, ep.tags AS tags
        ORDER BY ep.created_at DESC
        LIMIT $limit`,
-      { limit: neo4j.int(limit) },
+      { limit: neo4j.int(limit), ...tenantParams(tenantId) },
     );
     return result.records.map((r) => ({
       id: r.get('id') as string,
@@ -466,7 +491,7 @@ export async function fetchHierarchy(driver: Driver, entityId: string): Promise<
 
 // ─── Backlinks ──────────────────────────────────────────────────────────────
 
-export async function fetchBacklinks(driver: Driver, entityName: string): Promise<Array<{ entity_name: string; entity_slug: string; context: string }>> {
+export async function fetchBacklinks(driver: Driver, entityName: string, tenantId: string = DEFAULT_TENANT): Promise<Array<{ entity_name: string; entity_slug: string; context: string }>> {
   const session = driver.session();
   try {
     const result = await session.run(
@@ -474,10 +499,11 @@ export async function fetchBacklinks(driver: Driver, entityName: string): Promis
        MATCH (s)-[:ABOUT]->(other:Entity)
        WHERE other.name <> $name
          AND coalesce(s.archived, false) = false
+         AND ${tenantWhere('s')}
        RETURN DISTINCT other.name AS name, substring(s.content, 0, 120) AS context
        ORDER BY name
        LIMIT 50`,
-      { name: entityName },
+      { name: entityName, ...tenantParams(tenantId) },
     );
     return result.records.map((r) => ({
       entity_name: r.get('name') as string,
@@ -544,17 +570,18 @@ export async function fetchAllSources(driver: Driver): Promise<SourceInfo[]> {
   }
 }
 
-export async function fetchClaimsForSource(driver: Driver, sourceId: string): Promise<ResolvedClaim[]> {
+export async function fetchClaimsForSource(driver: Driver, sourceId: string, tenantId: string = DEFAULT_TENANT): Promise<ResolvedClaim[]> {
   const session = driver.session();
   try {
     const result = await session.run(
       `MATCH (s:Semantic)-[:CITES]->(src:Source {id: $sourceId})
        WHERE coalesce(s.archived, false) = false
+         AND ${tenantWhere('s')}
        OPTIONAL MATCH (s)-[:ABOUT]->(e:Entity)
        RETURN s.id AS id, s.content AS content, s.confidence AS confidence,
               collect(DISTINCT e.name) AS entity_refs
        ORDER BY s.confidence DESC`,
-      { sourceId },
+      { sourceId, ...tenantParams(tenantId) },
     );
     return result.records.map((r) => ({
       content: r.get('content') as string,
@@ -570,17 +597,19 @@ export async function fetchClaimsForSource(driver: Driver, sourceId: string): Pr
 
 // ─── Tags / Topics ──────────────────────────────────────────────────────────
 
-export async function fetchAllTags(driver: Driver): Promise<Array<{ tag: string; count: number; projects: string[] }>> {
+export async function fetchAllTags(driver: Driver, tenantId: string = DEFAULT_TENANT): Promise<Array<{ tag: string; count: number; projects: string[] }>> {
   const session = driver.session();
   try {
     const result = await session.run(
       `MATCH (s:Semantic)
        WHERE coalesce(s.archived, false) = false
+         AND ${tenantWhere('s')}
        UNWIND s.tags AS tag
        WITH tag WHERE NOT tag STARTS WITH 'project:'
        WITH tag, count(*) AS cnt
        RETURN tag, cnt AS count, [] AS projects
        ORDER BY cnt DESC`,
+      tenantParams(tenantId),
     );
     return result.records.map((r) => ({
       tag: r.get('tag') as string,
@@ -592,7 +621,7 @@ export async function fetchAllTags(driver: Driver): Promise<Array<{ tag: string;
   }
 }
 
-export async function fetchSemanticsForTag(driver: Driver, tag: string): Promise<Array<{
+export async function fetchSemanticsForTag(driver: Driver, tag: string, tenantId: string = DEFAULT_TENANT): Promise<Array<{
   content: string; confidence: number; entities: string[];
 }>> {
   const session = driver.session();
@@ -601,11 +630,12 @@ export async function fetchSemanticsForTag(driver: Driver, tag: string): Promise
       `MATCH (s:Semantic)
        WHERE $tag IN s.tags
          AND coalesce(s.archived, false) = false
+         AND ${tenantWhere('s')}
        OPTIONAL MATCH (s)-[:ABOUT]->(e:Entity)
        RETURN s.content AS content, s.confidence AS confidence,
               collect(DISTINCT e.name) AS entities
        ORDER BY s.confidence DESC`,
-      { tag },
+      { tag, ...tenantParams(tenantId) },
     );
     return result.records.map((r) => ({
       content: r.get('content') as string,
@@ -646,7 +676,7 @@ export async function fetchGraphStats(driver: Driver): Promise<{
 
 // ─── Inbound link count ─────────────────────────────────────────────────────
 
-export async function fetchInboundLinkCount(driver: Driver, entityName: string): Promise<number> {
+export async function fetchInboundLinkCount(driver: Driver, entityName: string, tenantId: string = DEFAULT_TENANT): Promise<number> {
   const session = driver.session();
   try {
     const result = await session.run(
@@ -654,8 +684,9 @@ export async function fetchInboundLinkCount(driver: Driver, entityName: string):
        MATCH (s)-[:ABOUT]->(other:Entity)
        WHERE other.name <> $name
          AND coalesce(s.archived, false) = false
+         AND ${tenantWhere('s')}
        RETURN count(DISTINCT other) AS cnt`,
-      { name: entityName },
+      { name: entityName, ...tenantParams(tenantId) },
     );
     return toNumber(result.records[0]?.get('cnt') ?? 0);
   } finally {
@@ -665,7 +696,7 @@ export async function fetchInboundLinkCount(driver: Driver, entityName: string):
 
 // ─── Sources for an entity ──────────────────────────────────────────────────
 
-export async function fetchSourcesForEntity(driver: Driver, entityName: string): Promise<Array<{
+export async function fetchSourcesForEntity(driver: Driver, entityName: string, tenantId: string = DEFAULT_TENANT): Promise<Array<{
   id: string; title: string; source_type: string; slug: string;
 }>> {
   const session = driver.session();
@@ -674,9 +705,10 @@ export async function fetchSourcesForEntity(driver: Driver, entityName: string):
       `MATCH (s:Semantic)-[:ABOUT]->(e:Entity {name: $name})
        MATCH (s)-[:CITES]->(src:Source)
        WHERE coalesce(s.archived, false) = false
+         AND ${tenantWhere('s')}
        RETURN DISTINCT src.id AS id, src.title AS title, src.source_type AS source_type
        ORDER BY title`,
-      { name: entityName },
+      { name: entityName, ...tenantParams(tenantId) },
     );
     return result.records.map((r) => ({
       id: r.get('id') as string,

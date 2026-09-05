@@ -491,3 +491,73 @@ describe('IngestionService semantic lifecycle stamping (RET-005B-AUTH-001B6P)', 
     expect(Object.prototype.hasOwnProperty.call(params, 'invalid_at')).toBe(false);
   });
 });
+
+// ─── createRelation identifier allowlist (audit C6) ─────────────────────────
+// Labels and relationship types cannot be Cypher parameters, so createRelation
+// interpolates them. These pin that anything outside the closed allowlist is
+// rejected BEFORE a query is built, and that the error never echoes the input.
+
+describe('IngestionService createRelation identifier guard', () => {
+  type RelationFn = (a: string, al: string, b: string, bl: string, rel: string) => Promise<void>;
+  const relation = (service: IngestionService): RelationFn =>
+    (service as unknown as { createRelation: RelationFn }).createRelation.bind(service);
+
+  const INJECTED_REL = 'X] MERGE (n) SET n.pwned=true //';
+  const INJECTED_LABEL = 'Entity) DETACH DELETE (n';
+
+  it('rejects an injection-shaped relType before session.run', async () => {
+    const { driver, getCalls } = createMockDriver();
+    const service = new IngestionService(driver);
+
+    await expect(relation(service)('a', 'Semantic', 'b', 'Source', INJECTED_REL))
+      .rejects.toThrow('invalid_relationship_type');
+    expect(getCalls().some((c) => c.query.includes('pwned'))).toBe(false);
+    expect(getCalls()).toHaveLength(0);
+  });
+
+  it('rejects an injection-shaped label before session.run', async () => {
+    const { driver, getCalls } = createMockDriver();
+    const service = new IngestionService(driver);
+
+    await expect(relation(service)('a', INJECTED_LABEL, 'b', 'Source', 'CITES'))
+      .rejects.toThrow('invalid_label');
+    await expect(relation(service)('a', 'Semantic', 'b', INJECTED_LABEL, 'CITES'))
+      .rejects.toThrow('invalid_label');
+    expect(getCalls().some((c) => c.query.includes('DETACH DELETE'))).toBe(false);
+    expect(getCalls()).toHaveLength(0);
+  });
+
+  it('does not echo the offending value in the thrown message', async () => {
+    const { driver } = createMockDriver();
+    const service = new IngestionService(driver);
+
+    for (const [label, rel] of [['Semantic', INJECTED_REL], [INJECTED_LABEL, 'CITES']] as const) {
+      let message = '';
+      try { await relation(service)('a', label, 'b', 'Source', rel); } catch (e) { message = String(e); }
+      expect(message).not.toBe('');
+      expect(message).not.toContain('pwned');
+      expect(message).not.toContain('DETACH');
+    }
+  });
+
+  it('accepts every label and relationship type ingest() actually uses', async () => {
+    const { driver, getCalls } = createMockDriver();
+    const service = new IngestionService(driver);
+    // Enumerated from the two call sites in ingest(): Semantic-CITES->Source,
+    // Semantic-ABOUT->Entity.
+    const legitimate: Array<[string, string, string]> = [
+      ['Semantic', 'Source', 'CITES'],
+      ['Semantic', 'Entity', 'ABOUT'],
+    ];
+    for (const [al, bl, rel] of legitimate) {
+      await relation(service)('a', al, 'b', bl, rel);
+    }
+    const queries = getCalls().map((c) => c.query);
+    expect(queries).toHaveLength(legitimate.length);
+    expect(queries[0]).toContain('MATCH (a:Semantic');
+    expect(queries[0]).toContain('MATCH (b:Source');
+    expect(queries[0]).toContain('[:CITES]');
+    expect(queries[1]).toContain('MATCH (b:Entity');
+    expect(queries[1]).toContain('[:ABOUT]');
+  });
+});

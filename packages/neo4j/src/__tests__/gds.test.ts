@@ -1,7 +1,8 @@
 // packages/neo4j/src/__tests__/gds.test.ts
-import { describe, it, expect, afterAll, beforeAll } from 'vitest';
+import { describe, it, expect, afterAll, beforeAll, vi } from 'vitest';
+import neo4j, { type Driver } from 'neo4j-driver';
 import { createNeo4jDriver } from '../driver.js';
-import { GDSAlgorithms } from '../gds.js';
+import { GDSAlgorithms, type SimilarPair } from '../gds.js';
 
 const NEO4J_URI = process.env.NEO4J_URI || 'bolt://localhost:7687';
 const NEO4J_USER = process.env.NEO4J_USER || 'neo4j';
@@ -154,16 +155,26 @@ describe('GDSAlgorithms', () => {
   });
 
   describe('findSimilarSemantics', () => {
-    it('returns an array (empty or populated — GDS may not be available)', async () => {
+    // The GDS plugin may be absent on the test box: the method then rejects
+    // with the value-free `similarity_unavailable` instead of returning [].
+    async function similarOrUnavailable(entity: string, threshold: number): Promise<SimilarPair[]> {
+      try {
+        return await gds.findSimilarSemantics(entity, threshold);
+      } catch (err) {
+        expect((err as Error).message).toBe('similarity_unavailable');
+        return [];
+      }
+    }
+
+    it('returns an array (empty or populated) or fails loud when GDS is unavailable', async () => {
       if (!neo4jAvailable) return;
-      const results = await gds.findSimilarSemantics(ENTITY_NAME, 0.0);
-      // Must be an array regardless of GDS availability
+      const results = await similarOrUnavailable(ENTITY_NAME, 0.0);
       expect(Array.isArray(results)).toBe(true);
     });
 
     it('returned pairs have nodeA, nodeB and similarity fields', async () => {
       if (!neo4jAvailable) return;
-      const results = await gds.findSimilarSemantics(ENTITY_NAME, 0.0);
+      const results = await similarOrUnavailable(ENTITY_NAME, 0.0);
       for (const pair of results) {
         expect(pair).toHaveProperty('nodeA');
         expect(pair).toHaveProperty('nodeB');
@@ -172,16 +183,16 @@ describe('GDSAlgorithms', () => {
       }
     });
 
-    it('catches GDS errors and returns empty array for unknown entity', async () => {
+    it('returns empty for unknown entity (or fails loud without GDS)', async () => {
       if (!neo4jAvailable) return;
-      const results = await gds.findSimilarSemantics('no-such-entity', 0.5);
-      expect(Array.isArray(results)).toBe(true);
+      const results = await similarOrUnavailable('no-such-entity', 0.5);
+      expect(results).toEqual([]);
     });
 
     it('respects threshold — no pair has similarity below threshold', async () => {
       if (!neo4jAvailable) return;
       const threshold = 0.99;
-      const results = await gds.findSimilarSemantics(ENTITY_NAME, threshold);
+      const results = await similarOrUnavailable(ENTITY_NAME, threshold);
       for (const pair of results) {
         expect(pair.similarity).toBeGreaterThanOrEqual(threshold);
       }
@@ -319,5 +330,62 @@ describe('GDSAlgorithms', () => {
       const results = await gds.findCorrectionClusters('no-such-entity');
       expect(results).toHaveLength(0);
     });
+  });
+});
+
+// ─── Fake-driver tests (no Neo4j needed) ─────────────────────────────────────
+
+describe('GDSAlgorithms.findSimilarSemantics (fake driver)', () => {
+  function fakeDriver(run: (cypher: string, params: Record<string, unknown>) => Promise<unknown>) {
+    const runSpy = vi.fn(run);
+    const close = vi.fn(async () => {});
+    const driver = { session: () => ({ run: runSpy, close }) } as unknown as Driver;
+    return { driver, run: runSpy, close };
+  }
+
+  it('rejects with value-free similarity_unavailable when the driver fails', async () => {
+    const stderr = vi.spyOn(console, 'error').mockImplementation(() => {});
+    try {
+      const { driver, close } = fakeDriver(async () => {
+        throw new Error('Could not connect to bolt://secret:7687 as user admin');
+      });
+      const gds = new GDSAlgorithms(driver);
+      let caught: unknown;
+      await gds.findSimilarSemantics('ent').catch((e) => { caught = e; });
+      expect(caught).toBeInstanceOf(Error);
+      expect((caught as Error).message).toBe('similarity_unavailable');
+      expect((caught as Error).message).not.toContain('bolt://secret');
+      expect(close).toHaveBeenCalledTimes(1);
+      expect(stderr).toHaveBeenCalledTimes(1);
+    } finally {
+      stderr.mockRestore();
+    }
+  });
+
+  it('bounds the cross join and the result with $limit (default 200, Neo4j integer)', async () => {
+    const { driver, run } = fakeDriver(async () => ({ records: [] }));
+    const gds = new GDSAlgorithms(driver);
+    await expect(gds.findSimilarSemantics('ent')).resolves.toEqual([]);
+    const [cypher, params] = run.mock.calls[0]! as [string, Record<string, unknown>];
+    expect(cypher).toMatch(/nodes\[0\.\.\$limit\]/);
+    expect(cypher).toMatch(/LIMIT \$limit\s*$/);
+    expect(neo4j.isInt(params.limit)).toBe(true);
+    expect(neo4j.integer.toNumber(params.limit as neo4j.Integer)).toBe(200);
+  });
+
+  it('accepts an explicit limit as the third argument', async () => {
+    const { driver, run } = fakeDriver(async () => ({ records: [] }));
+    await new GDSAlgorithms(driver).findSimilarSemantics('ent', 0.7, 25);
+    const params = run.mock.calls[0]![1] as Record<string, unknown>;
+    expect(neo4j.integer.toNumber(params.limit as neo4j.Integer)).toBe(25);
+  });
+
+  it('happy path: maps records and applies the threshold', async () => {
+    const rec = (nodeA: string, nodeB: string, similarity: number) => ({
+      get: (k: string) => ({ nodeA, nodeB, similarity })[k],
+    });
+    const { driver } = fakeDriver(async () => ({ records: [rec('a', 'b', 0.9), rec('a', 'c', 0.5)] }));
+    const results = await new GDSAlgorithms(driver).findSimilarSemantics('ent', 0.7);
+    expect(results).toEqual([{ nodeA: 'a', nodeB: 'b', similarity: 0.9 }]);
   });
 });

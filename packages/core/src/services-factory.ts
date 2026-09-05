@@ -42,6 +42,7 @@ import { DreamEngine, type DreamGraphLayer, type DreamBlockLayer } from './dream
 import { ExtractionConsumer } from './extraction-consumer.js';
 import { EMBEDDING_DIM, type EmbeddingProvider, type AMPConfig } from './types.js';
 import { readEnv, defaultExportPath } from './config/settings.js';
+import { parseBoolFlag } from './config/bool-flag.js';
 import { AdmissionShadowRuntime, resolveAdmissionShadowConfig } from './admission-shadow.js';
 import {
   AdmissionRoutingModeError,
@@ -202,15 +203,15 @@ export function createCoreServices(env: CoreServicesEnv = {}): CoreServices {
   const mDream = readEnv('MEMBERRY_MODEL_DREAM');
   if (mDream) models.dream = mDream;
 
-  const readonlyMode = readEnv('MEMBERRY_READONLY') === 'true';
-  const redactOnIngest = readEnv('MEMBERRY_REDACT_ON_INGEST') === 'true';
+  // Protections parse loose (see config/bool-flag.ts): `=1` must not silently
+  // leave the core writable or persist unredacted secrets.
+  const readonlyMode = parseBoolFlag(readEnv('MEMBERRY_READONLY'), false);
+  const redactOnIngest = parseBoolFlag(readEnv('MEMBERRY_REDACT_ON_INGEST'), false);
   // Keep the library-safe default review-first. Integrated deployments opt in
   // through compose/systemd; the ConsolidationEngine itself only auto-applies
   // corroborated promotions and positive reinforcement. Corrections,
   // contradictions, supersedes, and decay remain in the review queue.
-  const autoApplyConsolidation = ['1', 'true', 'yes', 'on'].includes(
-    (readEnv('MEMBERRY_CONSOLIDATION_AUTO_APPLY') ?? '').trim().toLowerCase(),
-  );
+  const autoApplyConsolidation = parseBoolFlag(readEnv('MEMBERRY_CONSOLIDATION_AUTO_APPLY'), false);
   const config: AMPConfig = {
     redis: { url: redisUrl },
     neo4j: { uri: neo4jUri, user: neo4jUser, password: neo4jPassword },

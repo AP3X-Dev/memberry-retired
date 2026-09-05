@@ -3,6 +3,8 @@ import { createCoreServices } from '../services-factory.js';
 
 const managedEnv = [
   'MEMBERRY_CONSOLIDATION_AUTO_APPLY',
+  'MEMBERRY_READONLY',
+  'MEMBERRY_REDACT_ON_INGEST',
   'MEMBERRY_ADMISSION_SHADOW_ENABLED',
   'MEMBERRY_ADMISSION_SHADOW_TIMEOUT_MS',
   'NEO4J_URI',
@@ -60,6 +62,21 @@ describe('createCoreServices consolidation policy config', () => {
     const core = createCoreServices();
     try {
       expect(core.config.consolidation.autoApply).toBe(true);
+    } finally {
+      await core.close();
+    }
+  });
+
+  // A7: protections parse the loose truthy set — `=1` must not silently
+  // disable redaction or leave the core writable under a read-only coordinator.
+  it.each([
+    ['MEMBERRY_REDACT_ON_INGEST', '1', 'redactOnIngest'],
+    ['MEMBERRY_READONLY', 'yes', 'readonly'],
+  ] as const)('%s=%s enables config.%s', async (name, value, key) => {
+    process.env[name] = value;
+    const core = createCoreServices();
+    try {
+      expect(core.config[key]).toBe(true);
     } finally {
       await core.close();
     }

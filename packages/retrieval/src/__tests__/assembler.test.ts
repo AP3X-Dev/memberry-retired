@@ -731,6 +731,61 @@ describe('UnifiedAssembler', () => {
     });
   });
 
+  describe('collection-size probe status (C4)', () => {
+    const ranked = { strategy: 'ranked' as const, include_arch: false };
+
+    it('starts as never', () => {
+      expect(assembler.collectionSizeStatus()).toEqual({ state: 'never', cachedAt: 0 });
+    });
+
+    it('records ok after a successful probe and returns a frozen copy', async () => {
+      driver.mockSession.run.mockResolvedValueOnce({ records: [{ get: () => 42 }] });
+      await assembler.assemble('test', ranked);
+      const status = assembler.collectionSizeStatus();
+      expect(status.state).toBe('ok');
+      expect(status.cachedAt).toBeGreaterThan(0);
+      expect(status.lastErrorClass).toBeUndefined();
+      expect(Object.isFrozen(status)).toBe(true);
+    });
+
+    it('records query-failed (class only, no message) when the driver rejects; result still served', async () => {
+      const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+      try {
+        driver.mockSession.run.mockRejectedValueOnce(new TypeError('secret query text'));
+        const ctx = await assembler.assemble('test', ranked);
+        expect(ctx.strategy).toBe('ranked');
+        expect(assembler.collectionSizeStatus()).toMatchObject({ state: 'query-failed', lastErrorClass: 'TypeError' });
+        expect(errorSpy).toHaveBeenCalledTimes(1);
+        expect(String(errorSpy.mock.calls[0]?.[0])).toBe('[assembler] collection-size probe query-failed');
+        expect(JSON.stringify(errorSpy.mock.calls)).not.toContain('secret query text');
+      } finally {
+        errorSpy.mockRestore();
+      }
+    });
+
+    it('records timeout when the deadline expires, still serves, and logs once per TTL window', async () => {
+      vi.useFakeTimers();
+      const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+      try {
+        driver.mockSession.run.mockImplementation(() => new Promise(() => {}));
+        const pending = assembler.assemble('test', ranked);
+        await vi.advanceTimersByTimeAsync(2_000);
+        const ctx = await pending;
+        expect(ctx.strategy).toBe('ranked');
+        expect(assembler.collectionSizeStatus()).toMatchObject({ state: 'timeout' });
+
+        // Four more requests inside the same 60 s window: no re-probe, no second line.
+        for (let i = 0; i < 4; i += 1) await assembler.assemble('test', ranked);
+        expect(driver.mockSession.run).toHaveBeenCalledTimes(1);
+        expect(errorSpy).toHaveBeenCalledTimes(1);
+        expect(String(errorSpy.mock.calls[0]?.[0])).toBe('[assembler] collection-size probe timeout');
+      } finally {
+        errorSpy.mockRestore();
+        vi.useRealTimers();
+      }
+    });
+  });
+
   describe('RET-010C served reranker wiring', () => {
     function servedAssembler(provider: ServedRerankerConstructionV1 | null = createServedRerankerProviderV1()) {
       return new UnifiedAssembler(

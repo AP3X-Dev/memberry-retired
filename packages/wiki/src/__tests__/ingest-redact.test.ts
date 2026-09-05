@@ -116,6 +116,23 @@ describe('IngestionService — redactOnIngest (OPT-12)', () => {
     expect(joined).toContain('[REDACTED]');
   });
 
+  it('respects MEMBERRY_REDACT_ON_INGEST=1 read from env (A7: protections parse loose)', async () => {
+    process.env.MEMBERRY_REDACT_ON_INGEST = '1';
+    const { driver, calls } = createMockDriver();
+    const service = new IngestionService(driver);
+
+    await service.ingest({
+      content: 'creds password: hunter2trustno1 here',
+      source_type: 'note',
+      project_tag: 'project:user-personal',
+      author: 'human',
+    });
+
+    const joined = semanticContents(calls()).join('\n');
+    expect(joined).not.toContain('hunter2trustno1');
+    expect(joined).toContain('[REDACTED]');
+  });
+
   // ─── Flag OFF (default): verbatim, no behavior change ────────────────────────
 
   it('persists content verbatim when the flag is off (default) — no over-redaction', async () => {

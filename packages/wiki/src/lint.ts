@@ -3,6 +3,8 @@
 
 import neo4j, { type Driver } from 'neo4j-driver';
 import type { LintInput, LintResult, LintCheckResult, LintIssue, LintCheck } from './types.js';
+import { DEFAULT_TENANT } from '@memberry/core';
+import { tenantWhere, tenantParams } from './queries.js';
 
 // ─── Shared report formatter ─────────────────────────────────────────────────
 //
@@ -57,7 +59,7 @@ export function formatLintReport(result: LintResult, opts?: { summaryOnly?: bool
 
 // ─── Individual check implementations ───────────────────────────────────────
 
-type CheckFn = (driver: Driver, projectName: string, thresholds: Required<NonNullable<LintInput['thresholds']>>) => Promise<LintCheckResult>;
+type CheckFn = (driver: Driver, projectName: string, thresholds: Required<NonNullable<LintInput['thresholds']>>, tenantId: string) => Promise<LintCheckResult>;
 
 const CHECKS: Record<LintCheck, CheckFn> = {
   orphan_pages: checkOrphanPages,
@@ -81,19 +83,19 @@ const DEFAULT_THRESHOLDS = {
 
 // ─── Orphan pages: entities with zero inbound semantic references ────────────
 
-async function checkOrphanPages(driver: Driver, projectName: string, thresholds: typeof DEFAULT_THRESHOLDS): Promise<LintCheckResult> {
+async function checkOrphanPages(driver: Driver, projectName: string, thresholds: typeof DEFAULT_THRESHOLDS, tenantId: string): Promise<LintCheckResult> {
   const session = driver.session();
   try {
     const result = await session.run(
       `MATCH (project:Entity {type: 'project'})-[:CONTAINS*0..]->(e:Entity)
        WHERE project.name CONTAINS $projectName AND e.type <> 'project'
        OPTIONAL MATCH (s:Semantic)-[:ABOUT]->(e)
-       WHERE coalesce(s.archived, false) = false
+       WHERE coalesce(s.archived, false) = false AND ${tenantWhere('s')}
        WITH e, count(s) AS semCount
        WHERE semCount <= $minLinks
        RETURN e.name AS name, e.type AS type, semCount
        ORDER BY name`,
-      { projectName, minLinks: neo4j.int(thresholds.orphan_min_links) },
+      { projectName, minLinks: neo4j.int(thresholds.orphan_min_links), ...tenantParams(tenantId) },
     );
 
     const issues: LintIssue[] = result.records.map((r) => ({
@@ -111,7 +113,7 @@ async function checkOrphanPages(driver: Driver, projectName: string, thresholds:
 
 // ─── Broken links: semantic nodes referencing non-existent entities ──────────
 
-async function checkBrokenLinks(driver: Driver, projectName: string): Promise<LintCheckResult> {
+async function checkBrokenLinks(driver: Driver, projectName: string, _thresholds: typeof DEFAULT_THRESHOLDS, tenantId: string): Promise<LintCheckResult> {
   // Find entities referenced by semantics but with no project home.
   // Ignores:
   //   - project-root entities (type='project') — they ARE the parent, no CONTAINS expected
@@ -128,12 +130,13 @@ async function checkBrokenLinks(driver: Driver, projectName: string): Promise<Li
          }
          AND ANY(t IN s.tags WHERE t STARTS WITH 'project:')
          AND coalesce(s.archived, false) = false
+         AND ${tenantWhere('s')}
        OPTIONAL MATCH (anyProj:Entity {type: 'project'})-[:CONTAINS*1..]->(e)
        WITH e, count(s) AS refs, collect(DISTINCT anyProj.name) AS otherProjects
        RETURN e.name AS name, e.id AS id, refs, otherProjects
        ORDER BY refs DESC
        LIMIT 50`,
-      { projectName },
+      { projectName, ...tenantParams(tenantId) },
     );
 
     const issues: LintIssue[] = result.records.map((r) => {
@@ -166,7 +169,7 @@ async function checkBrokenLinks(driver: Driver, projectName: string): Promise<Li
 
 // ─── Missing links: entities that co-occur in semantics but lack a relationship
 
-async function checkMissingLinks(driver: Driver, projectName: string, thresholds: typeof DEFAULT_THRESHOLDS): Promise<LintCheckResult> {
+async function checkMissingLinks(driver: Driver, projectName: string, thresholds: typeof DEFAULT_THRESHOLDS, tenantId: string): Promise<LintCheckResult> {
   const session = driver.session();
   try {
     const result = await session.run(
@@ -174,13 +177,14 @@ async function checkMissingLinks(driver: Driver, projectName: string, thresholds
        MATCH (s)-[:ABOUT]->(e2:Entity)
        WHERE e1.name < e2.name
          AND coalesce(s.archived, false) = false
+         AND ${tenantWhere('s')}
          AND NOT EXISTS { MATCH (e1)-[:CONTAINS|USES|CALLS|EXTENDS|IMPLEMENTS|EMITS|LISTENS]-(e2) }
        WITH e1.name AS entity1, e2.name AS entity2, count(s) AS cooccurrences
        WHERE cooccurrences >= $minCooccurrence
        RETURN entity1, entity2, cooccurrences
        ORDER BY cooccurrences DESC
        LIMIT 30`,
-      { projectName, minCooccurrence: neo4j.int(thresholds.missing_link_min_cooccurrence) },
+      { projectName, minCooccurrence: neo4j.int(thresholds.missing_link_min_cooccurrence), ...tenantParams(tenantId) },
     );
 
     const issues: LintIssue[] = result.records.map((r) => ({
@@ -198,7 +202,7 @@ async function checkMissingLinks(driver: Driver, projectName: string, thresholds
 
 // ─── Redirect candidates: entities with very similar names ──────────────────
 
-async function checkRedirectCandidates(driver: Driver, projectName: string): Promise<LintCheckResult> {
+async function checkRedirectCandidates(driver: Driver, projectName: string, _thresholds: typeof DEFAULT_THRESHOLDS, tenantId: string): Promise<LintCheckResult> {
   const session = driver.session();
   try {
     // Find entity pairs where one name contains the other or they share a long common substring
@@ -229,18 +233,18 @@ async function checkRedirectCandidates(driver: Driver, projectName: string): Pro
 
 // ─── Link density: articles with unusually few entity references ─────────────
 
-async function checkLinkDensity(driver: Driver, projectName: string): Promise<LintCheckResult> {
+async function checkLinkDensity(driver: Driver, projectName: string, _thresholds: typeof DEFAULT_THRESHOLDS, tenantId: string): Promise<LintCheckResult> {
   const session = driver.session();
   try {
     const result = await session.run(
       `MATCH (project:Entity {type: 'project'})-[:CONTAINS*0..]->(e:Entity)
        WHERE project.name CONTAINS $projectName AND e.type <> 'project'
        OPTIONAL MATCH (s:Semantic)-[:ABOUT]->(e)
-       WHERE coalesce(s.archived, false) = false
+       WHERE coalesce(s.archived, false) = false AND ${tenantWhere('s')}
        WITH e, count(s) AS semCount
        WHERE semCount > 0
        OPTIONAL MATCH (s2:Semantic)-[:ABOUT]->(e)
-       WHERE coalesce(s2.archived, false) = false
+       WHERE coalesce(s2.archived, false) = false AND ${tenantWhere('s2')}
        OPTIONAL MATCH (s2)-[:ABOUT]->(other:Entity)
        WHERE other.name <> e.name
        WITH e, semCount, count(DISTINCT other) AS outboundLinks
@@ -248,7 +252,7 @@ async function checkLinkDensity(driver: Driver, projectName: string): Promise<Li
        RETURN e.name AS name, e.type AS type, semCount
        ORDER BY semCount DESC
        LIMIT 20`,
-      { projectName },
+      { projectName, ...tenantParams(tenantId) },
     );
 
     const issues: LintIssue[] = result.records.map((r) => ({
@@ -266,18 +270,18 @@ async function checkLinkDensity(driver: Driver, projectName: string): Promise<Li
 
 // ─── Hub detection: entities with very high inbound references ──────────────
 
-async function checkHubDetection(driver: Driver, projectName: string, thresholds: typeof DEFAULT_THRESHOLDS): Promise<LintCheckResult> {
+async function checkHubDetection(driver: Driver, projectName: string, thresholds: typeof DEFAULT_THRESHOLDS, tenantId: string): Promise<LintCheckResult> {
   const session = driver.session();
   try {
     const result = await session.run(
       `MATCH (s:Semantic)-[:ABOUT]->(e:Entity)
-       WHERE coalesce(s.archived, false) = false
+       WHERE coalesce(s.archived, false) = false AND ${tenantWhere('s')}
        WITH e, count(DISTINCT s) AS refCount
        WHERE refCount >= $minLinks
        RETURN e.name AS name, e.type AS type, refCount
        ORDER BY refCount DESC
        LIMIT 20`,
-      { minLinks: neo4j.int(thresholds.hub_min_links) },
+      { minLinks: neo4j.int(thresholds.hub_min_links), ...tenantParams(tenantId) },
     );
 
     const issues: LintIssue[] = result.records.map((r) => ({
@@ -295,17 +299,18 @@ async function checkHubDetection(driver: Driver, projectName: string, thresholds
 
 // ─── Contradictions: semantic nodes with contradicting signals ──────────────
 
-async function checkContradictions(driver: Driver, projectName: string): Promise<LintCheckResult> {
+async function checkContradictions(driver: Driver, projectName: string, _thresholds: typeof DEFAULT_THRESHOLDS, tenantId: string): Promise<LintCheckResult> {
   const session = driver.session();
   try {
     const result = await session.run(
       `MATCH (ep:Episodic)-[:CONTRADICTS]->(s:Semantic)
        WHERE coalesce(s.archived, false) = false
+         AND ${tenantWhere('s')} AND ${tenantWhere('ep')}
        RETURN s.id AS sem_id, s.content AS content, s.confidence AS confidence,
               count(ep) AS contradiction_count
        ORDER BY contradiction_count DESC
        LIMIT 20`,
-      {},
+      tenantParams(tenantId),
     );
 
     const issues: LintIssue[] = result.records.map((r) => ({
@@ -323,18 +328,19 @@ async function checkContradictions(driver: Driver, projectName: string): Promise
 
 // ─── Low confidence: claims with few reinforcements ─────────────────────────
 
-async function checkLowConfidence(driver: Driver, projectName: string, thresholds: typeof DEFAULT_THRESHOLDS): Promise<LintCheckResult> {
+async function checkLowConfidence(driver: Driver, projectName: string, thresholds: typeof DEFAULT_THRESHOLDS, tenantId: string): Promise<LintCheckResult> {
   const session = driver.session();
   try {
     const result = await session.run(
       `MATCH (s:Semantic)-[:ABOUT]->(e:Entity)
        WHERE s.confidence <= $maxConfidence
          AND coalesce(s.archived, false) = false
+         AND ${tenantWhere('s')}
        RETURN s.id AS id, s.content AS content, s.confidence AS confidence,
               collect(DISTINCT e.name) AS entities
        ORDER BY s.confidence ASC
        LIMIT 30`,
-      { maxConfidence: thresholds.low_confidence_max },
+      { maxConfidence: thresholds.low_confidence_max, ...tenantParams(tenantId) },
     );
 
     const issues: LintIssue[] = result.records.map((r) => ({
@@ -352,20 +358,20 @@ async function checkLowConfidence(driver: Driver, projectName: string, threshold
 
 // ─── Stale sources: sources not referenced by recent semantics ──────────────
 
-async function checkStaleSources(driver: Driver, projectName: string): Promise<LintCheckResult> {
+async function checkStaleSources(driver: Driver, projectName: string, _thresholds: typeof DEFAULT_THRESHOLDS, tenantId: string): Promise<LintCheckResult> {
   const session = driver.session();
   try {
     const result = await session.run(
       `MATCH (src:Source)
        WHERE src.project_tag CONTAINS $projectName
        OPTIONAL MATCH (s:Semantic)-[:CITES]->(src)
-       WHERE coalesce(s.archived, false) = false
+       WHERE coalesce(s.archived, false) = false AND ${tenantWhere('s')}
        WITH src, count(s) AS citationCount
        WHERE citationCount = 0
        RETURN src.title AS title, src.source_type AS type, src.created_at AS created
        ORDER BY created
        LIMIT 20`,
-      { projectName },
+      { projectName, ...tenantParams(tenantId) },
     );
 
     const issues: LintIssue[] = result.records.map((r) => ({
@@ -383,19 +389,20 @@ async function checkStaleSources(driver: Driver, projectName: string): Promise<L
 
 // ─── Coverage gaps: domain tags with thin coverage ──────────────────────────
 
-async function checkCoverageGaps(driver: Driver, projectName: string): Promise<LintCheckResult> {
+async function checkCoverageGaps(driver: Driver, projectName: string, _thresholds: typeof DEFAULT_THRESHOLDS, tenantId: string): Promise<LintCheckResult> {
   const session = driver.session();
   try {
     const result = await session.run(
       `MATCH (s:Semantic)
        WHERE ANY(t IN s.tags WHERE t = 'project:' + $projectName)
          AND coalesce(s.archived, false) = false
+         AND ${tenantWhere('s')}
        UNWIND s.tags AS tag
        WITH s, tag WHERE NOT tag STARTS WITH 'project:'
        RETURN tag, count(*) AS count, avg(s.confidence) AS avgConfidence
        ORDER BY count ASC
        LIMIT 20`,
-      { projectName },
+      { projectName, ...tenantParams(tenantId) },
     );
 
     const issues: LintIssue[] = result.records
@@ -423,7 +430,7 @@ async function checkCoverageGaps(driver: Driver, projectName: string): Promise<L
 export class WikiLinter {
   constructor(private driver: Driver) {}
 
-  async lint(input: LintInput): Promise<LintResult> {
+  async lint(input: LintInput, tenantId: string = DEFAULT_TENANT): Promise<LintResult> {
     const projectName = input.project_tag.replace(/^project:/, '');
     const thresholds = { ...DEFAULT_THRESHOLDS, ...input.thresholds };
     const checksToRun = input.checks ?? (Object.keys(CHECKS) as LintCheck[]);
@@ -436,7 +443,7 @@ export class WikiLinter {
       if (!fn) continue;
 
       try {
-        const result = await fn(this.driver, projectName, thresholds);
+        const result = await fn(this.driver, projectName, thresholds, tenantId);
         results[check] = result;
         totalIssues += result.issues.length;
       } catch (err) {

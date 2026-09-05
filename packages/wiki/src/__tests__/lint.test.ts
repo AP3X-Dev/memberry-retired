@@ -492,3 +492,56 @@ describe('WikiLinter', () => {
     });
   });
 });
+
+// ─── Tenant predicate on every Semantic/Episodic read (audit C3, item 5b) ────
+
+describe('tenant predicate on lint Semantic/Episodic reads', () => {
+  const TENANT = 'tenant-a';
+  // Every check whose Cypher matches a Semantic or Episodic node. A new check
+  // that touches those labels must be added here (and must carry $tenantId).
+  const cases = [
+    'orphan_pages', 'broken_links', 'missing_links', 'link_density', 'hub_detection',
+    'contradictions', 'low_confidence', 'stale_sources', 'coverage_gaps',
+  ] as const;
+
+  it.each(cases)('%s carries $tenantId on every Semantic/Episodic MATCH', async (check) => {
+    const calls: Array<{ query: string; params: Record<string, unknown> }> = [];
+    const driver = createMockDriver((query, params) => {
+      calls.push({ query, params: (params ?? {}) as Record<string, unknown> });
+      return mockResult([]);
+    });
+    await new WikiLinter(driver).lint({ project_tag: 'project:p', checks: [check] }, TENANT);
+    expect(calls.length).toBeGreaterThan(0);
+    for (const { query, params } of calls) {
+      const aliases = [...query.matchAll(/\((\w+):(Semantic|Episodic)\)/g)].map((m) => m[1]);
+      expect(aliases.length).toBeGreaterThan(0);
+      for (const alias of aliases) {
+        expect(query, `${check}: alias ${alias} unguarded`).toContain(
+          `(${alias}.tenant_id = $tenantId OR (${alias}.tenant_id IS NULL AND $tenantId = $defaultTenant))`,
+        );
+      }
+      expect(params.tenantId).toBe(TENANT);
+      expect(params.defaultTenant).toBe('default');
+    }
+  });
+
+  it('every check whose Cypher mentions Semantic/Episodic is in the table', async () => {
+    const src = await import('node:fs').then((fs) => fs.readFileSync(new URL('../lint.ts', import.meta.url), 'utf8'));
+    const covered = new Set<string>(cases);
+    for (const m of src.matchAll(/^async function (check\w+)\(/gm)) {
+      const body = src.slice(m.index!);
+      const end = body.indexOf('\nasync function ', 1);
+      const fn = end === -1 ? body : body.slice(0, end);
+      if (!/\(\w+:(Semantic|Episodic)\)/.test(fn)) continue;
+      const key = m[1].replace(/^check/, '').replace(/([a-z])([A-Z])/g, '$1_$2').toLowerCase();
+      expect(covered, `${m[1]} missing from tenant table`).toContain(key);
+    }
+  });
+
+  it('defaults to the default tenant so existing callers keep single-tenant behaviour', async () => {
+    const runSpy = vi.fn(async () => mockResult([]));
+    const driver = { session: vi.fn(() => ({ run: runSpy, close: vi.fn(async () => {}) })) } as unknown as Driver;
+    await new WikiLinter(driver).lint({ project_tag: 'project:p', checks: ['hub_detection'] });
+    expect(runSpy.mock.calls[0]?.[1]).toMatchObject({ tenantId: 'default', defaultTenant: 'default' });
+  });
+});

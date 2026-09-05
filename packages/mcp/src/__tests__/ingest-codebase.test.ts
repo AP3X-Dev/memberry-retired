@@ -125,6 +125,14 @@ describe('berry_ingest_codebase handler', () => {
     expect(bootstrapArgs.project_tag).toBe('project:my-test-app');
     expect(bootstrapArgs.description).toBe('A test application');
 
+    // Item 14a: the confined absolute ingest root is persisted on the project
+    // entity only (modules carry no root_path) so the watcher can restart at boot.
+    const projectEntity = bootstrapArgs.entities.find((e: { type: string }) => e.type === 'project');
+    expect(projectEntity.root_path).toBe(resolve(tempDir));
+    for (const e of bootstrapArgs.entities.filter((e: { type: string }) => e.type !== 'project')) {
+      expect(e).not.toHaveProperty('root_path');
+    }
+
     // Should have called code indexer
     expect(mockCodeIndexer.indexProject).toHaveBeenCalledTimes(1);
 

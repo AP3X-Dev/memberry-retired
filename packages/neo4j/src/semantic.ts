@@ -26,6 +26,9 @@ function canonicalTags(tags: string[] | undefined): string[] {
   return (tags ?? []).map((t) => (/^project:/i.test(t) ? t.toLowerCase() : t));
 }
 
+/** Driver error code raised when a MERGE violates a uniqueness constraint. */
+const CONSTRAINT_VIOLATION_CODE = 'Neo.ClientError.Schema.ConstraintValidationFailed';
+
 export class SemanticStore {
   /**
    * @param embedding Optional provider used to compute a content embedding at
@@ -77,6 +80,7 @@ export class SemanticStore {
           tags: $tags,
           scope: $scope,
           tenant_id: $tenant_id,
+          status: 'active',
           valid_at: $created_at
         })
         ${embedding ? 'SET s.embedding = $embedding' : ''}
@@ -267,6 +271,7 @@ export class SemanticStore {
           new.tags = $tags,
           new.scope = $scope,
           new.tenant_id = $tenant_id,
+          new.status = 'active',
           new.valid_at = $now
         ${embedding ? 'SET new.embedding = $embedding' : ''}
         MERGE (new)-[:SUPERSEDES]->(old)
@@ -319,10 +324,18 @@ export class SemanticStore {
     }
   }
 
+  /**
+   * @param dedupeKey Optional content-derived key (caller computes it; this
+   *   package cannot import core's `semanticDedupeKey`). Set ON CREATE so the
+   *   `semantic_dedupe_unique` constraint covers promoted Semantics. When the
+   *   constraint rejects the MERGE, the source episodes are linked onto the
+   *   Semantic that already owns the key and ITS id is returned — no twin node.
+   */
   async promoteFromEpisodic(
     episodicIds: string[],
     newNode: SemanticNode,
     tenantId?: string,
+    dedupeKey?: string,
   ): Promise<string> {
     const uniqueEpisodeIds = [...new Set(episodicIds)];
     if (uniqueEpisodeIds.length === 0) {
@@ -373,10 +386,11 @@ export class SemanticStore {
                       s.tags = $tags,
                       s.scope = $scope,
                       s.tenant_id = $tenant_id,
+                      s.status = 'active',
                       s.valid_at = coalesce(reduce(latest = null, ep IN episodes |
                         CASE WHEN latest IS NULL OR ep.created_at > latest
                              THEN ep.created_at ELSE latest END), $created_at)
-                      ${embedding ? ', s.embedding = $embedding' : ''}
+                      ${embedding ? ', s.embedding = $embedding' : ''}${dedupeKey ? ', s.dedupe_key = $dedupeKey' : ''}
         WITH s, episodes
         UNWIND episodes AS ep
         MERGE (s)-[:PROMOTED_FROM]->(ep)
@@ -416,7 +430,46 @@ export class SemanticStore {
         now: new Date().toISOString(),
       };
       if (embedding) params.embedding = embedding;
-      const result = await session.executeWrite((tx) => tx.run(query, params));
+      if (dedupeKey) params.dedupeKey = dedupeKey;
+      let result;
+      try {
+        result = await session.executeWrite((tx) => tx.run(query, params));
+      } catch (err: unknown) {
+        if (!dedupeKey || (err as { code?: unknown }).code !== CONSTRAINT_VIOLATION_CODE) throw err;
+        // Another Semantic in this tenant already owns the dedupe_key: link the
+        // source episodes onto it instead of creating a twin. Same provenance
+        // guard as the create path — an episode already promoted elsewhere
+        // still fails closed.
+        result = await session.executeWrite((tx) => tx.run(
+          `
+        MATCH (existing:Semantic {dedupe_key: $dedupeKey})
+        WHERE coalesce(existing.tenant_id, $default_tenant) = $tenant_id
+        MATCH (ep:Episodic)
+        WHERE ep.id IN $episodicIds
+          AND coalesce(ep.tenant_id, $default_tenant) = $tenant_id
+        WITH existing, collect(DISTINCT ep) AS episodes
+        WHERE size(episodes) = size($episodicIds)
+          AND none(ep IN episodes WHERE EXISTS {
+            MATCH (ep)<-[:PROMOTED_FROM]-(other:Semantic)
+            WHERE other.id <> existing.id
+          })
+        UNWIND episodes AS ep
+        MERGE (existing)-[:PROMOTED_FROM]->(ep)
+        RETURN DISTINCT existing.id AS id
+          `,
+          {
+            dedupeKey,
+            episodicIds: uniqueEpisodeIds,
+            tenant_id: params.tenant_id,
+            default_tenant: DEFAULT_TENANT,
+          },
+        ));
+        if (result.records.length === 0) {
+          throw new Error(
+            `Promotion collided on dedupe_key but no matching Semantic in tenant ${params.tenant_id as string} accepted the sources`,
+          );
+        }
+      }
       if (result.records.length === 0) {
         throw new Error(
           `Promotion sources were missing, already promoted, or outside tenant ${params.tenant_id as string}`,

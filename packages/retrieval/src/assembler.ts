@@ -350,11 +350,21 @@ async function withCollectionSizeDeadline<T>(operation: Promise<T>, timeoutMs: n
 
 // ─── Unified assembler ──────────────────────────────────────────────────────
 
+/** Outcome of the last collection-size probe window (C4). `never` until the first
+ *  probe; `cachedAt` is the window stamp. `lastErrorClass` is the error's constructor
+ *  name only — the message is never recorded (it may carry query text). */
+export interface CollectionSizeProbeStatus {
+  state: 'ok' | 'timeout' | 'query-failed' | 'never';
+  cachedAt: number;
+  lastErrorClass?: string;
+}
+
 export class UnifiedAssembler {
   private deterministic: DeterministicAssembler;
   private feedback: FeedbackTracker;
   private cachedCollectionSize: number | undefined;
   private collectionSizeCachedAt = 0;
+  private collectionSizeProbe: CollectionSizeProbeStatus = { state: 'never', cachedAt: 0 };
   private static readonly COLLECTION_SIZE_TTL_MS = 60_000; // 60s cache
   readonly servedRerankerEnabled: boolean;
   private multihop: MultihopExpansionOptionsV1 | undefined;
@@ -859,6 +869,11 @@ export class UnifiedAssembler {
     return { context, ...(traceAdapter ? { trace: traceAdapter.finalize() } : {}) };
   }
 
+  /** Frozen snapshot of the last probe window; surfaced on /readyz by the MCP bootstrap. */
+  collectionSizeStatus(): Readonly<CollectionSizeProbeStatus> {
+    return Object.freeze({ ...this.collectionSizeProbe });
+  }
+
   private async getCollectionSize(): Promise<number | undefined> {
     const now = Date.now();
     // `> 0` is the never-probed sentinel: collectionSizeCachedAt initializes to 0,
@@ -878,6 +893,7 @@ export class UnifiedAssembler {
         );
         const raw = result.records[0]?.get('c');
         this.cachedCollectionSize = typeof raw === 'number' ? raw : raw?.toNumber?.() ?? undefined;
+        this.collectionSizeProbe = { state: 'ok', cachedAt: now };
       } finally {
         // Stamped on the failure path as well as the success path, so one window is
         // one probe. The close is bounded too: a hung close in this finally hangs
@@ -888,7 +904,19 @@ export class UnifiedAssembler {
           COLLECTION_SIZE_CLOSE_TIMEOUT_MS,
         );
       }
-    } catch { /* proceed without scaling */ }
+    } catch (err) {
+      // Proceed without scaling, but leave a record: fusion now runs on a stale or
+      // absent collection size until the TTL window closes. The stamp above makes
+      // this catch fire at most once per window, so one stderr line per window.
+      const state = err instanceof Error && err.message === 'collection_size_timeout' ? 'timeout' : 'query-failed';
+      this.collectionSizeCachedAt = now;
+      this.collectionSizeProbe = {
+        state,
+        cachedAt: now,
+        lastErrorClass: err instanceof Error ? err.constructor.name : typeof err,
+      };
+      console.error(`[assembler] collection-size probe ${state}`);
+    }
     return this.cachedCollectionSize;
   }
 

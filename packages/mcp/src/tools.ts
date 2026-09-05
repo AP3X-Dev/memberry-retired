@@ -61,7 +61,7 @@ export interface IBootstrapGraphService {
     project_tag: string;
     description: string;
     domain: string;
-    entities: Array<{ name: string; type: string; description?: string; parent?: string }>;
+    entities: Array<{ name: string; type: string; description?: string; parent?: string; root_path?: string }>;
     semantic_seeds: Array<{ claim: string; domain: string; confidence?: number; about?: string[]; tags?: string[] }>;
     agents: Array<{ id: string; name: string; type: string }>;
   }): Promise<{
@@ -472,7 +472,7 @@ const AmpProvenanceSchema = {
 
 // ─── Handler implementations ─────────────────────────────────────────────────
 
-type ToolResult = Promise<{ content: Array<{ type: 'text'; text: string }> }>;
+type ToolResult = Promise<{ content: Array<{ type: 'text'; text: string }>; isError?: boolean }>;
 
 export type ToolHandlers = {
   berry_load: (args: {
@@ -704,6 +704,20 @@ export function buildToolHandlers(container: ServiceContainer = defaultContainer
       const results: GrepResult[] = [];
       const seenIds = new Set<string>();
 
+      // Audit B1: a failed per-type query must not read as a genuine no-hit.
+      // Reasons are value-free classes — never the raw message, which may
+      // carry Cypher text, hosts, or stored values.
+      const failed: Array<{ type: string; reason: string }> = [];
+      function recordFailure(type: string, err: unknown): void {
+        const code = (err as { code?: string })?.code ?? '';
+        const msg = err instanceof Error ? err.message : String(err);
+        const reason = /TimedOut|timeout/i.test(code + msg) ? 'timeout'
+          : /regex|regular expression|pattern/i.test(msg) ? 'invalid-regex'
+          : 'query-failed';
+        failed.push({ type, reason });
+        console.error(`[berry_grep] ${type} query failed: ${reason}`);
+      }
+
       // Helper: extract snippet around match
       function extractSnippet(fullText: string, pat: string, isRx: boolean, isCaseSens: boolean): string {
         if (!fullText) return '';
@@ -794,7 +808,7 @@ export function buildToolHandlers(container: ServiceContainer = defaultContainer
             );
           }
         } catch (err: unknown) {
-          // Skip if query fails (e.g., regex syntax unsupported by Neo4j)
+          recordFailure('episodic', err);
         }
       }
 
@@ -811,7 +825,7 @@ export function buildToolHandlers(container: ServiceContainer = defaultContainer
             );
           }
         } catch (err: unknown) {
-          // Skip on failure
+          recordFailure('semantic', err);
         }
       }
 
@@ -837,7 +851,7 @@ export function buildToolHandlers(container: ServiceContainer = defaultContainer
             );
           }
         } catch (err: unknown) {
-          // Skip on failure
+          recordFailure('fact', err);
         }
       }
 
@@ -860,7 +874,7 @@ export function buildToolHandlers(container: ServiceContainer = defaultContainer
             );
           }
         } catch (err: unknown) {
-          // Skip on failure
+          recordFailure('block', err);
         }
       }
 
@@ -889,7 +903,7 @@ export function buildToolHandlers(container: ServiceContainer = defaultContainer
             );
           }
         } catch (err: unknown) {
-          // Skip on failure
+          recordFailure('entity', err);
         }
       }
 
@@ -897,11 +911,19 @@ export function buildToolHandlers(container: ServiceContainer = defaultContainer
       results.sort((a, b) => b.score - a.score);
 
       // Render markdown
+      if (failed.length > 0 && failed.length >= nodeTypes.length) {
+        const reasons = [...new Set(failed.map(f => f.reason))].join(', ');
+        return { ...textContent(`berry_grep: all ${failed.length} node-type queries failed (${reasons})`), isError: true };
+      }
+      const partialLine = failed.length > 0
+        ? `_partial: ${failed.map(f => f.type).join(', ')} unavailable (${[...new Set(failed.map(f => f.reason))].join(', ')})_\n`
+        : '';
+
       if (results.length === 0) {
-        return textContent(`## Grep Results: "${pattern}" (0 matches)\n\n_No matches found._`);
+        return textContent(`## Grep Results: "${pattern}" (0 matches)\n${partialLine}\n_No matches found._`);
       }
 
-      const lines: string[] = [`## Grep Results: "${pattern}" (${results.length} match${results.length === 1 ? '' : 'es'})\n`];
+      const lines: string[] = [`## Grep Results: "${pattern}" (${results.length} match${results.length === 1 ? '' : 'es'})\n${partialLine}`];
 
       // Group by node type
       const grouped = new Map<string, GrepResult[]>();
@@ -1092,7 +1114,8 @@ export function buildToolHandlers(container: ServiceContainer = defaultContainer
       const domain = args.domain ?? scan.domain;
 
       // Phase 2: Bootstrap the graph
-      const projectEntity = { name: projectName, type: 'project' as const, description };
+      // Item 14a: persist the confined ingest root so the watcher can be restarted at boot.
+      const projectEntity = { name: projectName, type: 'project' as const, description, root_path: absPath };
       const moduleEntities = scan.modules.map((m) => ({
         name: m.name,
         type: m.type,

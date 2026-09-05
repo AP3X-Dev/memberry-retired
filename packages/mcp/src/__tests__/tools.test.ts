@@ -803,6 +803,74 @@ describe('berry_grep handler', () => {
     expect(text).toContain('_No matches found._');
   });
 
+  // Audit B1: a failed per-type query must never render as a genuine no-hit.
+  describe('query failure surfacing', () => {
+    const SECRET_ERR = 'ServiceUnavailable: could not connect to bolt://secret:7687';
+    function failFor(types: string[], message = SECRET_ERR): void {
+      vi.mocked(mockScopedQuery.rawCypher).mockImplementation(async (cypher: string) => {
+        const label = cypher.includes('Episodic') ? 'Episodic'
+          : cypher.includes('Semantic') ? 'Semantic'
+          : cypher.includes('Fact') ? 'Fact'
+          : cypher.includes('MemoryBlock') ? 'MemoryBlock' : 'Entity';
+        if (types.includes(label)) throw new Error(message);
+        if (label === 'Semantic') return [{ s: { id: 'sem-1', content: 'uses JWT', confidence: 0.9 } }];
+        return [];
+      });
+    }
+
+    it('one type failing renders a partial line and keeps other matches', async () => {
+      failFor(['Fact']);
+      const handlers = buildToolHandlers();
+      const result = await handlers.berry_grep({ pattern: 'JWT' });
+      const text = result.content[0].text;
+      expect(result.isError).toBeFalsy();
+      expect(text).toContain('1 match');
+      expect(text).toContain('### Semantic');
+      expect(text).toMatch(/partial: fact unavailable \(query-failed\)/);
+      expect(text).not.toContain('bolt://secret');
+    });
+
+    it('all types failing returns isError with a value-free message', async () => {
+      failFor(['Episodic', 'Semantic', 'Fact', 'MemoryBlock', 'Entity']);
+      const handlers = buildToolHandlers();
+      const result = await handlers.berry_grep({ pattern: 'JWT' });
+      const text = result.content[0].text;
+      expect(result.isError).toBe(true);
+      expect(text).toContain('berry_grep: all 5 node-type queries failed (query-failed)');
+      expect(text).not.toContain('bolt://secret');
+      expect(text).not.toContain('No matches found');
+    });
+
+    it('classifies timeouts and keeps the partial line on a zero-match render', async () => {
+      failFor(['Entity'], 'Neo.ClientError.Transaction.TransactionTimedOut: The transaction has been terminated');
+      const handlers = buildToolHandlers();
+      const result = await handlers.berry_grep({ pattern: 'JWT', node_types: ['entity', 'block'] });
+      const text = result.content[0].text;
+      expect(result.isError).toBeFalsy();
+      expect(text).toContain('(0 matches)');
+      expect(text).toMatch(/partial: entity unavailable \(timeout\)/);
+    });
+
+    it('genuine zero matches with no failures is unchanged', async () => {
+      vi.mocked(mockScopedQuery.rawCypher).mockResolvedValue([]);
+      const handlers = buildToolHandlers();
+      const result = await handlers.berry_grep({ pattern: 'nothing_here' });
+      const text = result.content[0].text;
+      expect(result.isError).toBeFalsy();
+      expect(text).toBe('## Grep Results: "nothing_here" (0 matches)\n\n_No matches found._');
+      expect(text).not.toContain('partial:');
+    });
+
+    it('node_types restricted to semantic and semantic throws → isError', async () => {
+      failFor(['Semantic']);
+      const handlers = buildToolHandlers();
+      const result = await handlers.berry_grep({ pattern: 'JWT', node_types: ['semantic'] });
+      expect(result.isError).toBe(true);
+      expect(result.content[0].text).toContain('all 1 node-type queries failed');
+      expect(result.content[0].text).not.toContain('bolt://secret');
+    });
+  });
+
   it('deduplicates results by ID', async () => {
     // Return the same entity from multiple queries — should appear only once
     vi.mocked(mockScopedQuery.rawCypher).mockImplementation(async (cypher: string) => {

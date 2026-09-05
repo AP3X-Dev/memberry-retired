@@ -424,6 +424,42 @@ describe('createAMPServer', () => {
     expect(typeof amp.server.close).toBe('function');
   });
 
+  // A7: MEMBERRY_ALLOW_UNAUTHENTICATED is a safety-RELAXING flag, so it parses
+  // strict — only the exact string `true` opens the server; `1` must not.
+  it.each([
+    ['1', true],
+    ['true', false],
+  ])('MEMBERRY_ALLOW_UNAUTHENTICATED=%s → auth_required %s', async (value, authRequired) => {
+    const saved = {
+      apiToken: process.env.MEMBERRY_API_TOKEN,
+      legacyApiToken: process.env.AMP_API_TOKEN,
+      apiTokens: process.env.MEMBERRY_API_TOKENS,
+      allow: process.env.MEMBERRY_ALLOW_UNAUTHENTICATED,
+      legacyAllow: process.env.AMP_ALLOW_UNAUTHENTICATED,
+    };
+    delete process.env.MEMBERRY_API_TOKEN;
+    delete process.env.AMP_API_TOKEN;
+    delete process.env.MEMBERRY_API_TOKENS;
+    delete process.env.AMP_ALLOW_UNAUTHENTICATED;
+    process.env.MEMBERRY_ALLOW_UNAUTHENTICATED = value;
+    const handle = await createAMPServer().startSSE(0);
+    const baseUrl = `http://127.0.0.1:${(handle.httpServer.address() as AddressInfo).port}`;
+    try {
+      const health = await fetch(`${baseUrl}/healthz`);
+      expect(health.status).toBe(200);
+      expect((await health.json() as Record<string, unknown>).auth_required).toBe(authRequired);
+      const ready = await fetch(`${baseUrl}/readyz`);
+      expect(ready.status === 401).toBe(authRequired);
+    } finally {
+      await closeSSEHandle(handle, 500);
+      if (saved.apiToken === undefined) delete process.env.MEMBERRY_API_TOKEN; else process.env.MEMBERRY_API_TOKEN = saved.apiToken;
+      if (saved.legacyApiToken === undefined) delete process.env.AMP_API_TOKEN; else process.env.AMP_API_TOKEN = saved.legacyApiToken;
+      if (saved.apiTokens === undefined) delete process.env.MEMBERRY_API_TOKENS; else process.env.MEMBERRY_API_TOKENS = saved.apiTokens;
+      if (saved.allow === undefined) delete process.env.MEMBERRY_ALLOW_UNAUTHENTICATED; else process.env.MEMBERRY_ALLOW_UNAUTHENTICATED = saved.allow;
+      if (saved.legacyAllow === undefined) delete process.env.AMP_ALLOW_UNAUTHENTICATED; else process.env.AMP_ALLOW_UNAUTHENTICATED = saved.legacyAllow;
+    }
+  });
+
   it('can create multiple server instances independently', () => {
     const amp1 = createAMPServer();
     const amp2 = createAMPServer();

@@ -1,0 +1,15 @@
+# Prettier is a CHECK-ONLY floor (spec docs/superpowers/specs/spec-2026-09-02-review-surface.md,
+# item 34). Existing source is deliberately NOT reformatted: rewriting ~144k LOC would destroy
+# diff reviewability for every later cycle.
+#
+# Everything is ignored by default. Files added from cycle 23 onward opt in by negation below, so
+# the checked set only ever grows and never triggers a tree-wide rewrite.
+/**
+
+!/eslint.config.mjs
+!/LIMITATIONS.md
+!/.prettierrc
+!/packages/core/src/__tests__/test-files.inventory.test.ts
+# test-files.manifest.txt is deliberately absent: prettier has no parser for .txt and
+# --check errors on it. The manifest's format is enforced by the test above instead.
+!/bench/lab/contracts/readiness-probe-status.ts

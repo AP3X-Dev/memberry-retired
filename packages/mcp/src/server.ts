@@ -20,7 +20,7 @@ import {
 } from '@memberry/retrieval';
 import { registerWikiTools, WIKI_TOOL_NAMES } from '@memberry/wiki';
 import { registerGraphTools, GRAPH_TOOL_NAMES } from '@memberry/graph';
-import { readEnv, resolvePort } from '@memberry/core';
+import { parseBoolFlag, readEnv, resolvePort } from '@memberry/core';
 import { getConsolidationAutomationHealth } from './consolidation-coordinator.js';
 import { getAdmissionShadowProcessStatus } from './admission-shadow-status.js';
 import {
@@ -54,9 +54,101 @@ export interface SSEHandle {
   sessionIdentity: Map<string, { tenant: string; actor: string }>;
 }
 
-/** Pure status selector kept separate so degraded readiness policy is testable. */
-export function readinessStatusCode(automation: { unhealthy?: boolean }): 200 | 503 {
-  return automation.unhealthy === true ? 503 : 200;
+/** Pure status selector kept separate so degraded readiness policy is testable.
+ *  An unreachable datastore is an outage; embeddings disabled/degraded is a
+ *  documented mode and is only reported. */
+export function readinessStatusCode(
+  automation: { unhealthy?: boolean },
+  datastores?: DatastoreReadiness,
+): 200 | 503 {
+  if (automation.unhealthy === true) return 503;
+  if (datastores && (datastores.neo4j === 'unreachable' || datastores.redis === 'unreachable')) return 503;
+  return 200;
+}
+
+// ─── Datastore readiness probes (D1/A6) ──────────────────────────────────────
+
+export type DatastoreReadiness = { neo4j: 'ok' | 'unreachable'; redis: 'ok' | 'unreachable' };
+
+/** Registered by bootstrap once the datastores are connected (same process-global
+ *  pattern as the consolidation and admission-shadow status sources). */
+export interface ReadinessProbeSource {
+  neo4j: { getServerInfo(): Promise<unknown> };
+  redis: { ping(): Promise<unknown> };
+  embeddings: 'ok' | 'disabled' | 'degraded';
+  degraded: readonly string[];
+  /** Per-probe bound; default DEFAULT_READYZ_PROBE_TIMEOUT_MS. */
+  probeTimeoutMs?: number;
+  /** C4: last collection-size probe window from the retrieval assembler. Reported
+   *  only — a stale/absent collection size never flips readiness to 503. */
+  retrieval?: () => RetrievalReadiness;
+  /** 13b: last in-process lifecycle pass. Reported only — a failed pass never flips readiness to 503. */
+  lifecycle?: () => LifecycleReadiness;
+}
+
+export interface RetrievalReadiness {
+  collection_size: { state: string; cached_at: number; last_error_class?: string };
+}
+
+export interface LifecycleReadiness {
+  mode: 'disabled' | 'live';
+  last_run_at: string | null;
+  last_result: 'ok' | 'failed' | 'skipped' | 'never';
+  last_error_class?: string;
+  hebbian_drained?: number;
+  /** 13c: extraction-queue stats + failure count from the last pass's anti-entropy section. */
+  anti_entropy?: { pending: number; inflight: number; dead_lettered: number; failures: number };
+}
+
+export const DEFAULT_READYZ_PROBE_TIMEOUT_MS = 1_500;
+
+let readinessProbeSource: ReadinessProbeSource | null = null;
+
+export function registerReadinessProbeSource(source: ReadinessProbeSource): () => void {
+  readinessProbeSource = source;
+  return () => { if (readinessProbeSource === source) readinessProbeSource = null; };
+}
+
+async function probe(run: () => Promise<unknown>, timeoutMs: number): Promise<'ok' | 'unreachable'> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    await Promise.race([
+      run(),
+      new Promise<never>((_, reject) => { timer = setTimeout(() => reject(new Error('probe timed out')), timeoutMs); }),
+    ]);
+    return 'ok';
+  } catch {
+    return 'unreachable';
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+}
+
+/** Live Neo4j + Redis reachability plus the bootstrap-computed embedding state.
+ *  Returns undefined when no source is registered (embedded/test servers). */
+export async function getDatastoreReadiness(): Promise<
+  {
+    datastores: DatastoreReadiness;
+    embeddings: ReadinessProbeSource['embeddings'];
+    degraded: string[];
+    retrieval?: RetrievalReadiness;
+    lifecycle?: LifecycleReadiness;
+  } | undefined
+> {
+  const src = readinessProbeSource;
+  if (!src) return undefined;
+  const timeoutMs = src.probeTimeoutMs ?? DEFAULT_READYZ_PROBE_TIMEOUT_MS;
+  const [neo4j, redis] = await Promise.all([
+    probe(() => src.neo4j.getServerInfo(), timeoutMs),
+    probe(() => src.redis.ping(), timeoutMs),
+  ]);
+  return {
+    datastores: { neo4j, redis },
+    embeddings: src.embeddings,
+    degraded: [...src.degraded],
+    ...(src.retrieval ? { retrieval: src.retrieval() } : {}),
+    ...(src.lifecycle ? { lifecycle: src.lifecycle() } : {}),
+  };
 }
 
 export interface AMPMCPServer {
@@ -395,8 +487,8 @@ export function createAMPServer(): AMPMCPServer {
 
     // ── Auth token resolution ────────────────────────────────────────────
     // Priority: MEMBERRY_API_TOKEN env var → unauthenticated opt-out → generated session token
-    const allowUnauthenticated =
-      (readEnv('MEMBERRY_ALLOW_UNAUTHENTICATED') ?? '').toLowerCase() === 'true';
+    // Safety-relaxing flag: strict parse, only the exact string `true` opens it.
+    const allowUnauthenticated = parseBoolFlag(readEnv('MEMBERRY_ALLOW_UNAUTHENTICATED'), false, { strict: true });
     if (capabilityPolicyLookup !== undefined && allowUnauthenticated) {
       throw new CapabilityRuntimeConfigError();
     }
@@ -426,8 +518,8 @@ export function createAMPServer(): AMPMCPServer {
     // feedback/cache into the shared default bucket (the residual flagged by the
     // OPT-26/27 reviews). Such non-tenant tokens are rejected unless the operator
     // explicitly opts back into the legacy default-tenant fallback.
-    const allowDefaultTenant =
-      (readEnv('MEMBERRY_ALLOW_DEFAULT_TENANT') ?? '').toLowerCase() === 'true';
+    // Safety-relaxing flag: strict parse, only the exact string `true` opens it.
+    const allowDefaultTenant = parseBoolFlag(readEnv('MEMBERRY_ALLOW_DEFAULT_TENANT'), false, { strict: true });
 
     // effectiveToken is the single-token / "is auth on?" sentinel kept for the
     // status payload; actual validation goes through tokenToActor.
@@ -684,17 +776,19 @@ export function createAMPServer(): AMPMCPServer {
 
           // ── Authenticated readiness check ────────────────────────────────
           if (req.method === 'GET' && pathname === '/readyz') {
+            const readiness = await getDatastoreReadiness();
             const body: Record<string, unknown> = {
               ...statusPayload('ready'),
               admission_shadow: getAdmissionShadowProcessStatus(),
               retrieval_resolution: getRetrievalResolutionProcessStatusV1(),
+              ...readiness,
             };
             const automation = body['consolidation_automation'] as { unhealthy?: boolean };
             // During startup grace and while bounded retries are pending the
             // service remains ready. Only stale/exhausted enabled automation is
             // genuinely unhealthy; disabled/read-only modes are explicit but
-            // do not create a false outage.
-            sendJson(res, readinessStatusCode(automation), body);
+            // do not create a false outage. An unreachable datastore does.
+            sendJson(res, readinessStatusCode(automation, readiness?.datastores), body);
             return;
           }
 

@@ -4,7 +4,7 @@
 // correction clustering, PageRank-based importance scoring, and graceful
 // degradation when the GDS plugin is unavailable.
 
-import { describe, it, expect, vi } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { ConsolidationEngine } from '../consolidation.js';
 import type { ConsolidationRedisLayer, ConsolidationNeo4jLayer } from '../consolidation.js';
 import type { AMPConfig, SemanticNode, StreamSignal, ConsolidationProposal } from '../types.js';
@@ -368,7 +368,15 @@ describe('Correction signal clustering', () => {
 // ─── Error handling when GDS plugin is not available ──────────────────────────
 
 describe('GDS graceful degradation', () => {
-  it('findSimilarSemantics returns empty array when GDS query fails', async () => {
+  let stderr: ReturnType<typeof vi.spyOn>;
+  beforeEach(() => {
+    stderr = vi.spyOn(console, 'error').mockImplementation(() => {});
+  });
+  afterEach(() => {
+    stderr.mockRestore();
+  });
+
+  it('findSimilarSemantics throws similarity_unavailable when GDS query fails', async () => {
     const gdsError = new Error(
       'There is no procedure with the name `gds.similarity.cosine` registered',
     );
@@ -376,33 +384,30 @@ describe('GDS graceful degradation', () => {
     const driver = makeMockDriver(session);
     const gds = new GDSAlgorithms(driver);
 
-    const pairs = await gds.findSimilarSemantics('TestEntity', 0.5);
-
-    expect(pairs).toEqual([]);
+    await expect(gds.findSimilarSemantics('TestEntity', 0.5)).rejects.toThrow('similarity_unavailable');
+    await expect(gds.findSimilarSemantics('TestEntity', 0.5)).rejects.not.toThrow('gds.similarity.cosine');
     expect(session.close).toHaveBeenCalled();
   });
 
-  it('findSimilarSemantics returns empty on network timeout', async () => {
+  it('findSimilarSemantics throws similarity_unavailable on network timeout', async () => {
     const timeoutError = new Error('Connection timed out');
     const session = makeMockSession(timeoutError);
     const driver = makeMockDriver(session);
     const gds = new GDSAlgorithms(driver);
 
-    const pairs = await gds.findSimilarSemantics('TestEntity');
-
-    expect(pairs).toEqual([]);
+    await expect(gds.findSimilarSemantics('TestEntity')).rejects.toThrow('similarity_unavailable');
+    await expect(gds.findSimilarSemantics('TestEntity')).rejects.not.toThrow('Connection timed out');
     expect(session.close).toHaveBeenCalled();
   });
 
-  it('findSimilarSemantics returns empty on ServiceUnavailable error', async () => {
+  it('findSimilarSemantics throws similarity_unavailable on ServiceUnavailable error', async () => {
     const serviceError = new Error('ServiceUnavailable: Neo4j instance is not available');
     const session = makeMockSession(serviceError);
     const driver = makeMockDriver(session);
     const gds = new GDSAlgorithms(driver);
 
-    const pairs = await gds.findSimilarSemantics('TestEntity', 0.8);
-
-    expect(pairs).toEqual([]);
+    await expect(gds.findSimilarSemantics('TestEntity', 0.8)).rejects.toThrow('similarity_unavailable');
+    await expect(gds.findSimilarSemantics('TestEntity', 0.8)).rejects.not.toThrow('ServiceUnavailable');
   });
 
   it('pageRank propagates errors (no graceful fallback)', async () => {
@@ -476,8 +481,8 @@ describe('GDS graceful degradation', () => {
     const driver = makeMockDriver(session);
     const gds = new GDSAlgorithms(driver);
 
-    // findSimilarSemantics catches errors -> returns []
-    await gds.findSimilarSemantics('TestEntity');
+    // findSimilarSemantics throws similarity_unavailable -> session still closed via finally
+    await expect(gds.findSimilarSemantics('TestEntity')).rejects.toThrow('similarity_unavailable');
     expect(session.close).toHaveBeenCalledTimes(1);
 
     // pageRank throws -> session should still be closed via finally

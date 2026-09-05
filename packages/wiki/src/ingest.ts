@@ -8,9 +8,17 @@ import { basename, extname } from 'node:path';
 import { createHash } from 'node:crypto';
 import { nanoid } from 'nanoid';
 import type { ExtractionProvider } from '@memberry/core';
-import { readEnv, redactSecrets, semanticDedupeKey } from '@memberry/core';
+import { parseBoolFlag, readEnv, redactSecrets, semanticDedupeKey } from '@memberry/core';
 import type { IngestInput, IngestResult } from './types.js';
 import { needsConversion, type DocumentConverter } from './document-converter.js';
+
+// ─── Cypher identifier allowlists (audit C6) ─────────────────────────────────
+// Labels and relationship types cannot be Cypher parameters, so createRelation
+// interpolates them. ingest() only ever passes these closed sets; anything else
+// is rejected before a query string is built.
+
+const RELATION_LABELS: ReadonlySet<string> = new Set(['Semantic', 'Source', 'Entity']);
+const RELATION_TYPES: ReadonlySet<string> = new Set(['CITES', 'ABOUT']);
 
 // ─── Schema for Source nodes ─────────────────────────────────────────────────
 
@@ -50,7 +58,7 @@ export class IngestionService {
     redactOnIngest?: boolean,
   ) {
     this.redactOnIngest =
-      redactOnIngest ?? readEnv('MEMBERRY_REDACT_ON_INGEST') === 'true';
+      redactOnIngest ?? parseBoolFlag(readEnv('MEMBERRY_REDACT_ON_INGEST'), false);
   }
 
   async ingest(input: IngestInput): Promise<IngestResult> {
@@ -442,10 +450,17 @@ export class IngestionService {
     targetLabel: string,
     relType: string,
   ): Promise<void> {
+    // Value-free errors: the rejected string may be attacker-shaped.
+    if (!RELATION_LABELS.has(sourceLabel) || !RELATION_LABELS.has(targetLabel)) {
+      throw new Error('invalid_label');
+    }
+    if (!RELATION_TYPES.has(relType)) {
+      throw new Error('invalid_relationship_type');
+    }
     const session = this.driver.session();
     try {
-      // Dynamic relationship types require APOC or string interpolation.
-      // Since we control relType, it's safe to interpolate.
+      // Dynamic relationship types require APOC or string interpolation;
+      // the allowlist checks above are what make interpolating them safe.
       await session.run(
         `MATCH (a:${sourceLabel} {id: $sourceId})
          MATCH (b:${targetLabel} {id: $targetId})

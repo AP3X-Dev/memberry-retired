@@ -198,3 +198,51 @@ describe('AMPService project scope isolation', () => {
     expect(scopeArg.tags).toContain('project:alpha');
   });
 });
+
+describe('AMPService project Entity bootstrap (C13: no acknowledged-but-orphaned store)', () => {
+  // listProjectNames in makeNeo4j() knows only 'test', so 'project:newproj' takes the
+  // auto-placeholder path every time (fresh service => fresh knownProjectsCache).
+  const newProjectInput = () => baseInput({ tags: ['project:newproj'] });
+
+  it('fails the store with a value-free error and writes nothing when upsertProject rejects twice', async () => {
+    const create = vi.fn().mockResolvedValue('ep-1');
+    const redis = makeRedis();
+    const neo4j = makeNeo4j(create);
+    (neo4j.entity!.upsertProject as ReturnType<typeof vi.fn>).mockRejectedValue(new Error('Neo4j down: bolt://secret-host'));
+    const svc = new AMPService(redis, neo4j, availableEmbedding(), makeConfig());
+
+    await expect(svc.store(newProjectInput())).rejects.toThrow(/^project_entity_unavailable$/);
+    expect(neo4j.entity!.upsertProject).toHaveBeenCalledTimes(2);
+    expect(create).not.toHaveBeenCalled();
+    // Dedup marker released so a retry of the same content is not swallowed as a duplicate.
+    expect(redis.dedup.unmark).toHaveBeenCalledTimes(1);
+  });
+
+  it('succeeds when upsertProject rejects once then resolves (retried exactly once)', async () => {
+    const create = vi.fn().mockResolvedValue('ep-1');
+    const neo4j = makeNeo4j(create);
+    (neo4j.entity!.upsertProject as ReturnType<typeof vi.fn>)
+      .mockRejectedValueOnce(new Error('transient'))
+      .mockResolvedValueOnce(undefined);
+    const svc = new AMPService(makeRedis(), neo4j, availableEmbedding(), makeConfig());
+
+    const res = await svc.store(newProjectInput());
+    expect(res.id).toBeTruthy();
+    expect(res.duplicate).toBe(false);
+    expect(neo4j.entity!.upsertProject).toHaveBeenCalledTimes(2);
+    expect(create).toHaveBeenCalledTimes(1);
+    expect((create.mock.calls[0][0] as EpisodicNode).tags).toContain('project:newproj');
+  });
+
+  it('keeps storing when no entity store is wired (test doubles / legacy layers)', async () => {
+    const create = vi.fn().mockResolvedValue('ep-1');
+    const neo4j = makeNeo4j(create);
+    delete (neo4j as { entity?: unknown }).entity;
+    const svc = new AMPService(makeRedis(), neo4j, availableEmbedding(), makeConfig());
+
+    const res = await svc.store(newProjectInput());
+    expect(res.id).toBeTruthy();
+    expect(create).toHaveBeenCalledTimes(1);
+    expect((create.mock.calls[0][0] as EpisodicNode).tags).toContain('project:newproj');
+  });
+});

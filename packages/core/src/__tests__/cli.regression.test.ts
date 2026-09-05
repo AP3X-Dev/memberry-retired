@@ -41,12 +41,13 @@ describe('cli.ts regression', () => {
     const snapshotEnd = CLI_SOURCE.indexOf('async function runDream', snapshotStart);
     const snapshotSource = CLI_SOURCE.slice(snapshotStart, snapshotEnd);
     const guard = snapshotSource.indexOf("Object.hasOwn(flags, 'commit')");
-    const exportCall = snapshotSource.indexOf('await runExport({ path: snapshotPath })');
+    const exportCall = snapshotSource.indexOf('await runExport({');
 
     expect(guard).toBeGreaterThanOrEqual(0);
     expect(snapshotSource).toContain("Object.hasOwn(flags, 'message')");
     expect(snapshotSource).toContain('snapshot:git_publishing_disabled');
     expect(exportCall).toBeGreaterThan(guard);
+    expect(snapshotSource.slice(exportCall)).toContain('path: snapshotPath');
     expect(snapshotSource).not.toMatch(/['"]git['"]/);
     expect(snapshotSource).not.toContain("['add', '-f'");
     expect(snapshotSource).not.toContain("['commit'");

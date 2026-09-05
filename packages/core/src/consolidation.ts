@@ -11,6 +11,7 @@ import type {
 } from './types.js';
 import { SIGNAL_WEIGHTS, DEFAULT_TENANT } from './types.js';
 import { extractFacts } from './extract.js';
+import { semanticDedupeKey } from './bootstrap-graph.js';
 import { readEnv } from './config/settings.js';
 import type { LlmClient } from './llm.js';
 import { clusterHasIndependentCorroborationV1 } from './evidence-diversity.js';
@@ -308,6 +309,8 @@ export interface ConsolidationNeo4jLayer {
       episodicIds: string[],
       newNode: SemanticNode,
       tenantId?: string,
+      /** Content-derived `dedupe_key` set ON CREATE; a collision links onto the existing Semantic. */
+      dedupeKey?: string,
     ): Promise<string>;
   };
   /**
@@ -349,11 +352,16 @@ export interface ConsolidationNeo4jLayer {
 
 // ─── Result types ─────────────────────────────────────────────────────────────
 
+/** Batch outcome when a source-episode tenant read throws (C5). */
+const TENANT_UNRESOLVED = 'tenant_unresolved';
+
 export interface RunResult {
   skipped: boolean;
   reason?: string;
   proposals: ConsolidationProposal[];
   applied: string[];
+  /** C5: promote batches skipped because the source tenant could not be read. */
+  skipped_tenant_unresolved?: number;
 }
 
 // ─── ConsolidationEngine ──────────────────────────────────────────────────────
@@ -441,6 +449,7 @@ export class ConsolidationEngine {
 
       // 4. Apply or store for review
       const applied: string[] = [];
+      const counters = { tenant_unresolved: 0 };
       const durableSignalTargets = new Set<string>();
       const durableSignalProposalIds = new Set<string>();
       const signalProposalIds = new Set(signalProposals.map((proposal) => proposal.id));
@@ -465,7 +474,7 @@ export class ConsolidationEngine {
           (proposal.type === 'promote' && promoteConfidence >= 0.7)
         );
         if (approvedDecision || safeConfiguredAutoApply) {
-          const ok = await this._applyProposal(proposal);
+          const ok = await this._applyProposal(proposal, counters);
           if (ok) {
             applied.push(proposal.id);
             if (signalProposalIds.has(proposal.id)) {
@@ -500,7 +509,7 @@ export class ConsolidationEngine {
         }
       }
 
-      return { skipped: false, proposals, applied };
+      return { skipped: false, proposals, applied, skipped_tenant_unresolved: counters.tenant_unresolved };
     } finally {
       if (heartbeat) clearInterval(heartbeat);
       await heartbeatWork;
@@ -870,7 +879,10 @@ export class ConsolidationEngine {
 
   // ─── Private: apply proposal ──────────────────────────────────────────────
 
-  private async _applyProposal(proposal: ConsolidationProposal): Promise<boolean> {
+  private async _applyProposal(
+    proposal: ConsolidationProposal,
+    counters?: { tenant_unresolved: number },
+  ): Promise<boolean> {
     try {
       if (proposal.type === 'promote') {
         return await this._applyPromoteProposal(proposal);
@@ -936,6 +948,7 @@ export class ConsolidationEngine {
       return true;
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
+      if (message === TENANT_UNRESOLVED && counters) counters.tenant_unresolved++;
       console.error(
         `[consolidation] _applyProposal failed for proposal ${proposal.id} (type=${proposal.type}): ${message}`,
       );
@@ -990,7 +1003,14 @@ export class ConsolidationEngine {
     // The persistence layer creates the Semantic, every PROMOTED_FROM edge, and
     // inherited ABOUT links in one transaction. Passing the complete cluster is
     // essential: findPromotable excludes episodes by this provenance edge.
-    const newId = await this.neo4j.semantic.promoteFromEpisodic(sourceEpisodeIds, newNode, tenantId);
+    // D10: content-keyed dedupe_key so the semantic_dedupe_unique constraint
+    // covers promoted Semantics. Normalization: trim, collapse whitespace runs
+    // to one space, lowercase. Tenant is folded into the scope so two tenants
+    // never share a key; the `promoted:` prefix keeps it out of the seed/ingest
+    // key space.
+    const normalizedContent = newNode.content.trim().replace(/\s+/g, ' ').toLowerCase();
+    const dedupeKey = `promoted:${semanticDedupeKey(`${tenantId}/${proposal.scope}`, undefined, normalizedContent)}`;
+    const newId = await this.neo4j.semantic.promoteFromEpisodic(sourceEpisodeIds, newNode, tenantId, dedupeKey);
     await this._invalidateCacheBestEffort(newId);
 
     // Extract facts from the promoted content for traceability.
@@ -1030,6 +1050,7 @@ export class ConsolidationEngine {
     if (!accessor || episodeIds.length === 0) return preferred || DEFAULT_TENANT;
 
     const tenants = new Set<string>();
+    let readFailed = false;
     if (accessor.getTenantsByIds) {
       // OPT-45: one batched tenant_id projection instead of one getById per id.
       // Same contribution semantics: a found episode adds (tenant_id ?? DEFAULT);
@@ -1039,7 +1060,7 @@ export class ConsolidationEngine {
           tenants.add(t ?? DEFAULT_TENANT);
         }
       } catch {
-        // Non-critical: a failed batch read contributes nothing (→ DEFAULT below).
+        readFailed = true; // C5: fail the batch below, never fall through to DEFAULT.
       }
     } else {
       for (const id of episodeIds) {
@@ -1047,11 +1068,14 @@ export class ConsolidationEngine {
           const ep = await accessor.getById(id);
           if (ep) tenants.add(ep.tenant_id ?? DEFAULT_TENANT);
         } catch {
-          // Non-critical: a missing/unreadable episode just doesn't contribute.
+          readFailed = true; // C5: a missing episode (null) is fine; an unreadable one is not.
         }
       }
     }
 
+    // C5 (PRP §4.2 cross-tenant 0): any swallowed read means the cluster's
+    // tenant is unproven, so the batch fails instead of resolving to DEFAULT.
+    if (readFailed) throw new Error(TENANT_UNRESOLVED);
     if (tenants.size > 1) {
       throw new Error('Cannot promote episodes from multiple tenants');
     }

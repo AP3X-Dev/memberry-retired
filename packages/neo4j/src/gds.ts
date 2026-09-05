@@ -1,5 +1,5 @@
 // packages/neo4j/src/gds.ts
-import { type Driver } from 'neo4j-driver';
+import neo4j, { type Driver } from 'neo4j-driver';
 import { archivedWhere } from './query.js';
 
 export interface SimilarPair {
@@ -25,27 +25,31 @@ export class GDSAlgorithms {
 
   /**
    * Pairwise cosine similarity on Semantic nodes scoped to an entity.
-   * Attempts to use `gds.similarity.cosine`; falls back to manual dot-product
-   * computation if GDS is unavailable. Returns empty array on any error.
+   * Uses `gds.similarity.cosine`. The candidate list is capped at `limit`
+   * nodes before the O(n²) cross join and the result is capped at `limit` pairs.
+   * Throws a value-free `similarity_unavailable` error on any failure (GDS
+   * plugin missing, driver error); the original message goes to stderr only.
    */
   async findSimilarSemantics(
     entityName: string,
     threshold = 0.7,
+    limit = 200,
   ): Promise<SimilarPair[]> {
     const session = this.driver.session();
     try {
-      // Try GDS cosine similarity first
       const result = await session.run(
         `MATCH (s:Semantic)-[:ABOUT]->(e:Entity {name: $entityName})
          WHERE s.embedding IS NOT NULL AND ${archivedWhere('s')}
          WITH collect({id: s.id, embedding: s.embedding}) AS nodes
+         WITH nodes[0..$limit] AS nodes
          UNWIND nodes AS a
          UNWIND nodes AS b
          WITH a, b WHERE a.id < b.id
          RETURN a.id AS nodeA, b.id AS nodeB,
                 gds.similarity.cosine(a.embedding, b.embedding) AS similarity
-         ORDER BY similarity DESC`,
-        { entityName },
+         ORDER BY similarity DESC
+         LIMIT $limit`,
+        { entityName, limit: neo4j.int(limit) },
       );
 
       return result.records
@@ -56,8 +60,8 @@ export class GDSAlgorithms {
         }))
         .filter((p) => p.similarity >= threshold);
     } catch (err: unknown) {
-      // GDS not available or other error — return empty
-      return [];
+      console.error(`[gds] findSimilarSemantics failed: ${err instanceof Error ? err.message : String(err)}`);
+      throw new Error('similarity_unavailable');
     } finally {
       await session.close();
     }

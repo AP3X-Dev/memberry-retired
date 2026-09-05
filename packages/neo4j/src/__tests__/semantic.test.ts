@@ -568,3 +568,130 @@ it('maps valid_at/invalid_at through getById, dropping legacy absence and driver
   expect(junk?.valid_at).toBeUndefined();
   expect(junk?.invalid_at).toBeUndefined();
 });
+
+// Item 12a (RL-014): every Semantic writer stamps status = 'active' on create.
+// Asserted on the emitted Cypher — the only surface the mock harness observes.
+describe('SemanticStore status stamping (RL-014)', () => {
+  function makeCapturingStore(): { store: SemanticStore; queries: string[] } {
+    const queries: string[] = [];
+    const run = vi.fn(async (query: string) => {
+      queries.push(query);
+      return { records: [{ get: () => 'sem-status' }] };
+    });
+    const executeWrite = vi.fn(async (work: (tx: { run: typeof run }) => Promise<unknown>) =>
+      work({ run }));
+    const close = vi.fn(async () => undefined);
+    const store = new SemanticStore({ session: () => ({ run, executeWrite, close }) } as never);
+    return { store, queries };
+  }
+  const onCreateOf = (cypher: string): string => {
+    const start = cypher.indexOf('ON CREATE SET');
+    expect(start).toBeGreaterThan(-1);
+    const rest = cypher.slice(start);
+    const end = rest.search(/\n\s*(WITH|SET|MERGE|RETURN)\b/);
+    return end === -1 ? rest : rest.slice(0, end);
+  };
+
+  it('create stamps status active in the CREATE map', async () => {
+    const { store, queries } = makeCapturingStore();
+    await store.create(makeSemanticNode('status-create'));
+    expect(queries[0]).toMatch(/status:\s*'active'/);
+  });
+
+  it('promoteFromEpisodic stamps status active inside ON CREATE SET only', async () => {
+    const { store, queries } = makeCapturingStore();
+    await store.promoteFromEpisodic(['ep-a'], makeSemanticNode('status-promote'));
+    expect(onCreateOf(queries[0])).toMatch(/s\.status\s*=\s*'active'/);
+  });
+
+  it('supersede stamps status active on the successor inside ON CREATE SET only', async () => {
+    const { store, queries } = makeCapturingStore();
+    await store.supersede('sem-old', makeSemanticNode('status-supersede'));
+    expect(onCreateOf(queries[0])).toMatch(/new\.status\s*=\s*'active'/);
+  });
+});
+
+// Item 12b (audit D10): promoted Semantics carry a caller-supplied dedupe_key
+// so the semantic_dedupe_unique constraint covers them, and a key collision is
+// resolved by linking the source episodes onto the EXISTING Semantic (no twin).
+describe('SemanticStore promoteFromEpisodic dedupe_key (D10)', () => {
+  const CONSTRAINT_CODE = 'Neo.ClientError.Schema.ConstraintValidationFailed';
+
+  /** Each executeWrite call takes the next outcome: an Error to throw, else an id to return. */
+  function makeStore(outcomes: Array<Error | string>) {
+    const calls: Array<{ query: string; params: Record<string, unknown> }> = [];
+    let i = 0;
+    const executeWrite = vi.fn(async (work: (tx: { run: unknown }) => Promise<unknown>) => {
+      const outcome = outcomes[i++];
+      const run = vi.fn(async (query: string, params: Record<string, unknown>) => {
+        calls.push({ query, params });
+        if (outcome instanceof Error) throw outcome;
+        return { records: [{ get: () => outcome }] };
+      });
+      return work({ run });
+    });
+    const close = vi.fn(async () => undefined);
+    const store = new SemanticStore({ session: () => ({ executeWrite, close }) } as never);
+    return { store, calls, executeWrite, close };
+  }
+
+  it('sets s.dedupe_key ON CREATE and carries the param when a dedupeKey is given', async () => {
+    const { store, calls } = makeStore(['sem-1']);
+    await store.promoteFromEpisodic(['ep-a'], makeSemanticNode('dedupe-given'), undefined, 'promoted:abc');
+    const onCreate = calls[0]!.query.slice(calls[0]!.query.indexOf('ON CREATE SET'), calls[0]!.query.indexOf('WITH s, episodes'));
+    expect(onCreate).toMatch(/s\.dedupe_key\s*=\s*\$dedupeKey/);
+    expect(calls[0]!.params.dedupeKey).toBe('promoted:abc');
+  });
+
+  it('emits no dedupe_key clause or param when no dedupeKey is given', async () => {
+    const { store, calls } = makeStore(['sem-1']);
+    await store.promoteFromEpisodic(['ep-a'], makeSemanticNode('dedupe-absent'));
+    expect(calls[0]!.query).not.toContain('dedupe_key');
+    expect(calls[0]!.params).not.toHaveProperty('dedupeKey');
+  });
+
+  it('on a uniqueness-constraint collision links the episodes onto the existing Semantic and returns its id', async () => {
+    const collision = Object.assign(new Error('already exists'), { code: CONSTRAINT_CODE });
+    const { store, calls, executeWrite, close } = makeStore([collision, 'sem-existing']);
+    const node = makeSemanticNode('dedupe-twin');
+
+    await expect(store.promoteFromEpisodic(['ep-a', 'ep-b'], node, 'acme', 'promoted:abc')).resolves.toBe('sem-existing');
+
+    expect(executeWrite).toHaveBeenCalledTimes(2);
+    const retry = calls[1]!;
+    expect(retry.query).toMatch(/MATCH \(existing:Semantic \{dedupe_key: \$dedupeKey\}\)/);
+    expect(retry.query).toContain('MERGE (existing)-[:PROMOTED_FROM]->(ep)');
+    // No second node write: the fallback never creates a Semantic.
+    expect(retry.query).not.toMatch(/(MERGE|CREATE) \(\w*:Semantic \{id:/);
+    expect(retry.query).not.toContain('ON CREATE');
+    expect(retry.params).toMatchObject({ dedupeKey: 'promoted:abc', episodicIds: ['ep-a', 'ep-b'], tenant_id: 'acme' });
+    expect(close).toHaveBeenCalledTimes(1);
+  });
+
+  it('propagates any other driver error unchanged', async () => {
+    const other = Object.assign(new Error('deadlock'), { code: 'Neo.TransientError.Transaction.DeadlockDetected' });
+    const { store, executeWrite } = makeStore([other, 'sem-existing']);
+    await expect(store.promoteFromEpisodic(['ep-a'], makeSemanticNode('dedupe-other'), undefined, 'promoted:abc')).rejects.toBe(other);
+    expect(executeWrite).toHaveBeenCalledTimes(1);
+  });
+
+  it('propagates a constraint error when no dedupeKey was supplied (nothing to fall back to)', async () => {
+    const collision = Object.assign(new Error('id exists'), { code: CONSTRAINT_CODE });
+    const { store, executeWrite } = makeStore([collision, 'sem-existing']);
+    await expect(store.promoteFromEpisodic(['ep-a'], makeSemanticNode('dedupe-nokey'))).rejects.toBe(collision);
+    expect(executeWrite).toHaveBeenCalledTimes(1);
+  });
+
+  it('fails closed when the collision fallback finds no matching Semantic in the tenant', async () => {
+    const collision = Object.assign(new Error('already exists'), { code: CONSTRAINT_CODE });
+    const calls: string[] = [];
+    let n = 0;
+    const executeWrite = vi.fn(async (work: (tx: { run: unknown }) => Promise<unknown>) => {
+      const first = n++ === 0;
+      return work({ run: vi.fn(async (q: string) => { calls.push(q); if (first) throw collision; return { records: [] }; }) });
+    });
+    const store = new SemanticStore({ session: () => ({ executeWrite, close: vi.fn() }) } as never);
+    await expect(store.promoteFromEpisodic(['ep-a'], makeSemanticNode('dedupe-miss'), 'acme', 'promoted:abc')).rejects.toThrow(/dedupe_key/);
+    expect(calls).toHaveLength(2);
+  });
+});

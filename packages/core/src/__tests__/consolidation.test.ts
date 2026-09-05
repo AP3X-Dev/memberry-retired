@@ -865,6 +865,7 @@ describe('ConsolidationEngine tenant propagation', () => {
       ['ep-1', 'ep-2'],
       expect.objectContaining({ tenant_id: 'acme', content: 'Distilled knowledge' }),
       'acme',
+      expect.stringMatching(/^promoted:/),
     );
   });
 
@@ -963,7 +964,103 @@ describe('ConsolidationEngine tenant propagation', () => {
       ['ep-1', 'ep-2'],
       expect.objectContaining({ tenant_id: 'acme' }),
       'acme',
+      expect.stringMatching(/^promoted:/),
     );
+  });
+});
+
+describe('C5: tenant derivation fails closed on read errors', () => {
+  function promoteProposal(after: Record<string, unknown>): ConsolidationProposal {
+    return {
+      id: 'prop-c5',
+      type: 'promote',
+      scope: 'test',
+      affected_ids: ['ep-1', 'ep-2'],
+      before: {},
+      after,
+      score: 10,
+      created_at: new Date().toISOString(),
+    };
+  }
+
+  function setup(after: Record<string, unknown>, episodic: Record<string, unknown>) {
+    const promoteFromEpisodic = vi.fn().mockResolvedValue('new-id');
+    const redis = makeRedis({
+      proposals: {
+        save: vi.fn().mockResolvedValue(undefined),
+        get: vi.fn().mockResolvedValue(promoteProposal(after)),
+        listPending: vi.fn().mockResolvedValue(['prop-c5']),
+        remove: vi.fn().mockResolvedValue(undefined),
+      },
+    });
+    const neo4j = makeNeo4j({
+      semantic: {
+        getById: vi.fn().mockResolvedValue(null),
+        updateConfidence: vi.fn().mockResolvedValue(undefined),
+        supersede: vi.fn().mockResolvedValue('x'),
+        promoteFromEpisodic,
+      },
+      episodic,
+    });
+    return { engine: new ConsolidationEngine(redis, neo4j, makeConfig()), promoteFromEpisodic };
+  }
+
+  it('per-id getById rejection with no preferred tenant → batch fails, zero Semantics', async () => {
+    const { engine, promoteFromEpisodic } = setup(
+      { content: 'x', confidence: 0.7 },
+      { getById: vi.fn().mockRejectedValue(new Error('neo4j transient')) },
+    );
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    await expect(engine.reviewProposal('prop-c5', 'approve')).rejects.toThrow('Failed to apply proposal prop-c5');
+    expect(promoteFromEpisodic).not.toHaveBeenCalled();
+    expect(errorSpy.mock.calls.some((c) => String(c[0]).includes('tenant_unresolved'))).toBe(true);
+    errorSpy.mockRestore();
+  });
+
+  it('batched getTenantsByIds rejection with no preferred tenant → batch fails, zero Semantics', async () => {
+    const { engine, promoteFromEpisodic } = setup(
+      { content: 'x', confidence: 0.7 },
+      { getById: vi.fn(), getTenantsByIds: vi.fn().mockRejectedValue(new Error('neo4j transient')) },
+    );
+    await expect(engine.reviewProposal('prop-c5', 'approve')).rejects.toThrow('Failed to apply proposal prop-c5');
+    expect(promoteFromEpisodic).not.toHaveBeenCalled();
+  });
+
+  it('read rejection with a preferred tenant still fails closed (existing behaviour)', async () => {
+    const { engine, promoteFromEpisodic } = setup(
+      { content: 'x', confidence: 0.7, tenant_id: 'acme' },
+      { getById: vi.fn(), getTenantsByIds: vi.fn().mockRejectedValue(new Error('neo4j transient')) },
+    );
+    await expect(engine.reviewProposal('prop-c5', 'approve')).rejects.toThrow('Failed to apply proposal prop-c5');
+    expect(promoteFromEpisodic).not.toHaveBeenCalled();
+  });
+
+  it('happy path unchanged: a single resolved tenant promotes into that tenant', async () => {
+    const { engine, promoteFromEpisodic } = setup(
+      { content: 'x', confidence: 0.7 },
+      { getById: vi.fn(), getTenantsByIds: vi.fn().mockResolvedValue(['acme', 'acme']) },
+    );
+    await engine.reviewProposal('prop-c5', 'approve');
+    expect(promoteFromEpisodic).toHaveBeenCalledWith(['ep-1', 'ep-2'], expect.objectContaining({ tenant_id: 'acme' }), 'acme', expect.stringMatching(/^promoted:/));
+  });
+
+  // Item 12b (D10): the promote path passes a content-keyed dedupeKey so the
+  // semantic_dedupe_unique constraint covers promoted Semantics. Whitespace and
+  // case are normalized so a re-synthesized claim maps to the same key.
+  it('passes a promoted: dedupeKey that is stable across whitespace/case variants of the content', async () => {
+    const tenants = { getById: vi.fn(), getTenantsByIds: vi.fn().mockResolvedValue(['acme', 'acme']) };
+    const a = setup({ content: 'The  Engine owns\nValidation. ', confidence: 0.7 }, tenants);
+    const b = setup({ content: 'the engine owns validation.', confidence: 0.7 }, tenants);
+    await a.engine.reviewProposal('prop-c5', 'approve');
+    await b.engine.reviewProposal('prop-c5', 'approve');
+    const keyA = a.promoteFromEpisodic.mock.calls[0]![3] as string;
+    const keyB = b.promoteFromEpisodic.mock.calls[0]![3] as string;
+    expect(keyA).toMatch(/^promoted:[0-9a-f]{40}$/);
+    expect(keyB).toBe(keyA);
+
+    const c = setup({ content: 'a different claim', confidence: 0.7 }, tenants);
+    await c.engine.reviewProposal('prop-c5', 'approve');
+    expect(c.promoteFromEpisodic.mock.calls[0]![3]).not.toBe(keyA);
   });
 });
 

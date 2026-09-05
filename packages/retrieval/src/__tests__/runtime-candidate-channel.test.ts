@@ -2,7 +2,7 @@ import { describe, expect, it, vi } from 'vitest';
 import neo4j, { Record as Neo4jRecord } from 'neo4j-driver';
 import { EMBEDDING_DIM } from '@memberry/core';
 
-import { canonicalTraceJson, replayRetrievalTrace, RETRIEVAL_TRACE_CHANNEL_ORDER } from '../trace.js';
+import { assertRetrievalTraceConformant, canonicalTraceJson, replayRetrievalTrace, RETRIEVAL_TRACE_CHANNEL_ORDER } from '../trace.js';
 import { resolveRuntimeQueryPlannerAuthorityV1 } from '../runtime-query-planner.js';
 import {
   EPISODIC_STRUCTURED_INDEX_FLAG,
@@ -918,6 +918,92 @@ describe('RET-003B runtime candidate channel service', () => {
     expect(requests.map((request) => request.candidates.length)).toEqual([50, 50]);
     expect(replayRetrievalTrace(guarded.trace!).resultOrder).toEqual(guarded.trace!.resultOrder);
   }, 60_000);
+
+  it('item 15: traced served path with identifier reserve and episodic-head pin records exactly one reranker stage', async () => {
+    // Mirrors the live SPR-009/012 shape: memory-only, multi-channel (>100 fused candidates so the
+    // 2x candidate window trims), identifier-heavy task (reserve engages at episodic rank 53),
+    // baseline-rank-1 `architecture` episode demoted by the provider (RET-Q-004 pin engages), and a
+    // realistic token budget. Both default-off flags are on, as in production.
+    const rows = validRows();
+    const row = (evidenceId: string, title: string, content: string, score: number) => record(
+      ['tenantId', 'projectScope', 'resolvedEntityId', 'evidenceId', 'title', 'content', 'score'],
+      ['tenant-a', project, entityId, evidenceId, title, content, score],
+    );
+    rows.episodicVector = Array.from({ length: 64 }, (_, index) => index === 0
+      ? row('episode-head', 'architecture', `Approved AgentUnit migration saga head ${'h'.repeat(120)}`, 0.99)
+      : index === 52
+        ? row('episode-target', 'decision', `Approved RET-001A2 IDX-004 rollback metadata ${'t'.repeat(160)}`, 0.99 - index * 0.001)
+        : row(`episode-distractor-${index + 1}`, 'decision', `routine unrelated maintenance record ${index + 1}`, 0.99 - index * 0.001));
+    rows.scope = Array.from({ length: 40 }, (_, index) => row(`semantic-${index + 1}`, 'Semantic', `Scoped semantic memory ${index + 1}`, 0.95 - index * 0.002));
+    // Semantic vector overlaps scope on the first ten evidence IDs (shared private ID across channels).
+    rows.semanticVector = Array.from({ length: 30 }, (_, index) => row(`semantic-${index + 1}`, 'Semantic', `Scoped semantic memory ${index + 1}`, 0.9 - index * 0.002));
+    rows.fact = Array.from({ length: 12 }, (_, index) => row(`fact-${index + 1}`, 'Fact', `scheduler authority fact ${index + 1}`, 0.85 - index * 0.01));
+    const queryVector = new Array(EMBEDDING_DIM).fill(0);
+    queryVector[0] = 1;
+    const execution = await new RuntimeCandidateChannelService(driver(rows).driver).execute(
+      await authorityReceipt(), { includeArchitecture: false, includeMemory: true, queryVector },
+    );
+    expect(execution.candidates.length).toBeGreaterThan(100);
+    const provider = createRerankerProviderV1(
+      SERVED_RERANKER_PROVIDER_IDENTITY,
+      async (serialized) => {
+        const request = parseSerializedRerankerProviderRequestV1(serialized);
+        return serializeRerankerProviderResponseV1(
+          request,
+          SERVED_RERANKER_PROVIDER_IDENTITY,
+          request.candidates.map((candidate, index) => candidate.content.includes('migration saga head')
+            ? 0.01
+            : candidate.content.includes('RET-001A2') ? 0 : Number((1 - index * 0.001).toFixed(6))),
+        );
+      },
+    ) as ServedRerankerConstructionV1;
+    const assembler = candidateAssembler(provider);
+    assembler.enableEpisodicRecallV1();
+    assembler.enableEpisodicIdentifierReserveV1();
+    const task = 'Design a repeatable RET-001A2 IDX-004 migration workflow that migrates a root agent and all specialist identities, schedules, runtime identity state, and rollback metadata';
+    const served = await assembler.assembleCandidateExecutionServed(task, execution, 7_000, false, true, true);
+    const trace = served.trace!;
+    const kinds = trace.events.map((event) => event.kind);
+    // Diagnostic surface for the verifier: the event-kind sequence and incomplete reasons.
+    console.error('[item15] algorithmVersion=%s complete=%s incomplete=%j kinds=%j', trace.algorithmVersion, trace.complete, trace.incompleteReasons, [...new Set(kinds)]);
+    expect(trace.algorithmVersion).toBe('ranked-v2');
+    expect(trace.incompleteReasons).not.toContain('candidate-output-gap');
+    expect(kinds.filter((kind) => kind === 'reranker-stage')).toHaveLength(1);
+    expect(() => assertRetrievalTraceConformant(trace)).not.toThrow();
+  }, 60_000);
+
+  it('item 15 (diagnostic): every memory channel at the 64-row cap still records one reranker stage within the event budget', async () => {
+    const rows = validRows();
+    const row = (evidenceId: string, title: string, content: string, score: number) => record(
+      ['tenantId', 'projectScope', 'resolvedEntityId', 'evidenceId', 'title', 'content', 'score'],
+      ['tenant-a', project, entityId, evidenceId, title, content, score],
+    );
+    const fill = (prefix: string, title: string) => Array.from({ length: 64 }, (_, index) =>
+      row(`${prefix}-${index + 1}`, title, `${prefix} IDX-004 EVAL-001 record ${index + 1} ${'x'.repeat(200)}`, 0.99 - index * 0.001));
+    rows.episodicVector = fill('episode', 'decision');
+    rows.scope = fill('scope', 'Semantic');
+    rows.semanticVector = fill('semvec', 'Semantic');
+    rows.fact = fill('fact', 'Fact');
+    rows.block = fill('block', 'project_state');
+    const queryVector = new Array(EMBEDDING_DIM).fill(0);
+    queryVector[0] = 1;
+    const execution = await new RuntimeCandidateChannelService(driver(rows).driver).execute(
+      await authorityReceipt(), { includeArchitecture: false, includeMemory: true, queryVector },
+    );
+    const assembler = candidateAssembler(createServedRerankerProviderV1());
+    assembler.enableEpisodicRecallV1();
+    assembler.enableEpisodicIdentifierReserveV1();
+    const served = await assembler.assembleCandidateExecutionServed(
+      'Documentation refresh: what durable decisions govern docs, roadmap, README (EVAL-001, IDX-002/003/004)?', execution, 6_500, false, true, true,
+    );
+    const trace = served.trace!;
+    console.error('[item15b] candidates=%d traceCandidates=%d events=%d complete=%s incomplete=%j reranker=%d',
+      execution.candidates.length, trace.candidates.length, trace.events.length, trace.complete, trace.incompleteReasons,
+      trace.events.filter((event) => event.kind === 'reranker-stage').length);
+    expect(trace.incompleteReasons).not.toContain('candidate-output-gap');
+    expect(trace.events.filter((event) => event.kind === 'reranker-stage')).toHaveLength(1);
+    expect(() => assertRetrievalTraceConformant(trace)).not.toThrow();
+  }, 120_000);
 
   it('keeps parallel served candidate executions receipt-local', async () => {
     const firstRows = validRows();

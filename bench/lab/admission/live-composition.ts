@@ -19,6 +19,7 @@ import {
 } from '../../../packages/mcp/src/tools.js';
 import { createNeo4jDriver } from '../../../packages/neo4j/src/driver.js';
 import { hasClosedRetrievalResolutionStatusV1 } from '../contracts/retrieval-resolution-status.js';
+import { hasClosedReadinessProbeShapeV1, presentReadinessProbeKeys } from '../contracts/readiness-probe-status.js';
 
 const execFileAsync = promisify(execFile);
 const OBSERVATION_KEYS = [
@@ -649,16 +650,19 @@ function hasClosedAdmissionShadowShape(value: unknown): boolean {
 }
 
 function isExpectedDisposableMultiTenantDegradation(body: JsonRecord): boolean {
-  if (!exactKeys(body, [
+  const baseKeys = [
     'status', 'service', 'transport', 'active_sessions', 'registered_sessions',
     'auth_required', 'uptime_ms', 'consolidation_automation', 'admission_shadow',
     'retrieval_resolution',
-  ]) || body.status !== 'ready' || body.service !== 'memberry-mcp' || body.transport !== 'sse'
+  ];
+  if (!exactKeys(body, [...baseKeys, ...presentReadinessProbeKeys(body)])
+    || body.status !== 'ready' || body.service !== 'memberry-mcp' || body.transport !== 'sse'
     || body.auth_required !== true || !isNonnegativeSafeInteger(body.active_sessions)
     || !isNonnegativeSafeInteger(body.registered_sessions) || body.active_sessions !== body.registered_sessions
     || typeof body.uptime_ms !== 'number' || !Number.isFinite(body.uptime_ms) || body.uptime_ms < 0
     || !hasClosedAdmissionShadowShape(body.admission_shadow)
-    || !hasClosedRetrievalResolutionStatusV1(body.retrieval_resolution)) return false;
+    || !hasClosedRetrievalResolutionStatusV1(body.retrieval_resolution)
+    || !hasClosedReadinessProbeShapeV1(body)) return false;
   let automation: JsonRecord;
   try { automation = record(body.consolidation_automation, 'consolidation automation'); }
   catch { return false; }

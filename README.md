@@ -162,6 +162,8 @@ Step-by-step install and upgrade guides live in [`guides/`](guides/):
 | [systemd Production](guides/install-systemd.md) | Run under **systemd** (services + dream/local-snapshot/wiki-compile timers) outside Docker. |
 | [Migration from AMP](guides/migration-from-amp.md) | Upgrading an older **AMP** install — the retained `AMP_*` / `amp://` / `/sse` aliases and the user-facing renames. |
 
+Known gaps — evaluation coverage, corpus size, the build/runtime split, module size, configuration surface, and what the performance numbers do and don't mean — are disclosed with their measurement commands in [LIMITATIONS.md](LIMITATIONS.md).
+
 ### Hooks — a deterministic context floor (optional)
 
 MCP + skills are **model-driven**: the agent decides whether to call `berry_load`. Hooks make context-loading **harness-driven** instead — MemBerry memory is injected at the start of every session (and every turn, on Claude Code) regardless of whether the model remembers to ask. Hooks complement skills; they don't replace them. The split is deliberate:

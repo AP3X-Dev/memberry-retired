@@ -10,7 +10,7 @@ import { SymbolStore } from './symbol-store.js';
 import { generateLexicalVector } from './vectors.js';
 import type { EmbeddingProvider } from '@memberry/core';
 import type { SupportedLanguage, SymbolKind, SymbolNode, IndexResult } from './types.js';
-import { detectLanguage, isMcpConfigBasename } from './types.js';
+import { detectLanguage, isMcpConfigBasename, isTestPath } from './types.js';
 
 interface RelationSymbolFallback {
   name?: string;
@@ -96,10 +96,14 @@ export class CodeIndexer {
   /**
    * Index an entire project directory.
    * Walks the file tree, parses recognized source files, creates Symbol nodes and edges.
+   *
+   * `skipTests` (opt #8/A2): drop `isTestPath` files from the walk, matching the
+   * watcher's default. Defaults to `false` so today's bulk index (which includes
+   * test files) is unchanged; flipping the default is a separate item.
    */
   async indexProject(
     rootPath: string,
-    options?: { include?: string[]; exclude?: string[]; projectTag?: string },
+    options?: { include?: string[]; exclude?: string[]; projectTag?: string; skipTests?: boolean },
   ): Promise<IndexResult> {
     const result: IndexResult = {
       files_parsed: 0,
@@ -111,7 +115,8 @@ export class CodeIndexer {
     };
 
     const extraExcludes = new Set(options?.exclude ?? []);
-    const files = await this.walkDirectory(rootPath, extraExcludes);
+    const walked = await this.walkDirectory(rootPath, extraExcludes);
+    const files = options?.skipTests ? walked.filter((f) => !isTestPath(f)) : walked;
 
     // Filter to include patterns if specified
     const filtered = options?.include
@@ -166,7 +171,7 @@ export class CodeIndexer {
 
     // Phase 2: Create Entity:Component nodes for indexed files and resolve imports.
     // Uses cached parse results --- no re-parsing.
-    await this.ensureFileEntities(filtered);
+    await this.ensureFileEntities(filtered, options?.projectTag);
 
     // Resolve ALL imports in one batch: in-memory path resolution against the set
     // of indexed files + a single UNWIND round-trip, instead of an fs.stat storm
@@ -276,8 +281,13 @@ export class CodeIndexer {
   /**
    * Ensure Entity:Component nodes exist for all indexed files.
    * Creates them if missing so symbols can be linked via DEFINED_IN.
+   *
+   * `projectTag` (opt #8/A4): the same canonical `project:<slug>` scope stamped on
+   * the file's symbols, written as `project_scope` ON CREATE. ON MATCH it only
+   * fills a NULL scope so legacy unscoped rows heal on re-index while an already
+   * scoped row is never clobbered; `null` (no tag) leaves the property untouched.
    */
-  private async ensureFileEntities(filePaths: string[]): Promise<void> {
+  private async ensureFileEntities(filePaths: string[], projectTag?: string): Promise<void> {
     const session = this.driver.session();
     try {
       await session.run(
@@ -285,8 +295,13 @@ export class CodeIndexer {
          MERGE (e:Entity:Component {path: path})
          ON CREATE SET e.id = randomUUID(), e.name = last(split(path, '/')),
                        e.type = 'component', e.domain = 'source',
-                       e.created_at = $now`,
-        { paths: filePaths.filter((f) => detectLanguage(f)), now: new Date().toISOString() },
+                       e.created_at = $now, e.project_scope = $projectScope
+         ON MATCH SET e.project_scope = coalesce(e.project_scope, $projectScope)`,
+        {
+          paths: filePaths.filter((f) => detectLanguage(f)),
+          now: new Date().toISOString(),
+          projectScope: projectTag ?? null,
+        },
       );
     } finally {
       await session.close();

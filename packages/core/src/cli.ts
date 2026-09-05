@@ -5,7 +5,7 @@
 
 import { createNeo4jDriver, TenantAdmin, LifecycleStore, EpisodicIndexStore } from '@memberry/neo4j';
 import { writeFileSync } from 'fs';
-import { createRedisClient, ProposalStore, EpisodicBuffer } from '@memberry/redis';
+import { createRedisClient } from '@memberry/redis';
 import { exportAll, exportFiltered } from './export.js';
 import { defaultExportPath } from './config/settings.js';
 import { importFromPath, type ImportStrategy } from './import.js';
@@ -18,10 +18,8 @@ import { runConfigure } from './cli/configure.js';
 import { runProject } from './cli/project.js';
 import { runDoctor } from './cli/doctor.js';
 import { createCoreServices, buildDreamEngine } from './services-factory.js';
-import { LifecycleEngine } from './lifecycle.js';
-import { AntiEntropyEngine, type AntiEntropyRunResult } from './anti-entropy.js';
-import { HebbianEngine, type HebbianRunResult } from './hebbian.js';
-import { resolveAntiEntropyConfig, resolveHebbianConfig, resolveLifecycleConfig } from './config/lifecycle.js';
+import { runLifecyclePass } from './lifecycle-pass.js';
+import { resolveLifecycleConfig } from './config/lifecycle.js';
 import { OpenAiLlmClient } from './llm.js';
 import { extractEpisodeStructuredIndexV1 } from './structured-index-extractor.js';
 import { buildEpisodeIndexKeysV1, buildGraphBackfillIndexKeysV1 } from './structured-index.js';
@@ -79,16 +77,19 @@ async function runExport(flags: Record<string, string | boolean>): Promise<void>
   const exportPath = String(flags['path'] ?? defaultExportPath());
   const entities = flags['entity'] ? [String(flags['entity'])] : [];
   const tags = flags['tag'] ? [String(flags['tag'])] : [];
+  const tenantId = String(flags['tenant'] ?? DEFAULT_TENANT);
+  const includeEmbeddings = flags['include-embeddings'] === true;
 
   const { neo4jUri, neo4jUser, neo4jPassword } = loadEnv();
   const driver = createNeo4jDriver(neo4jUri, neo4jUser, neo4jPassword);
 
   try {
-    console.log(`Exporting to ${exportPath}...`);
+    console.log(`Exporting tenant ${tenantId} to ${exportPath}...`);
     const hasFilter = entities.length > 0 || tags.length > 0;
+    const opts = { tenantId, includeEmbeddings };
     const result = hasFilter
-      ? await exportFiltered(driver, exportPath, { entities, tags })
-      : await exportAll(driver, exportPath);
+      ? await exportFiltered(driver, exportPath, { entities, tags }, opts)
+      : await exportAll(driver, exportPath, opts);
 
     console.log(`Export complete: ${result.exported} exported, ${result.skipped} skipped`);
     if (result.errors.length > 0) {
@@ -132,7 +133,11 @@ async function runSnapshot(flags: Record<string, string | boolean>): Promise<voi
     );
   }
 
-  await runExport({ path: snapshotPath });
+  await runExport({
+    path: snapshotPath,
+    tenant: String(flags['tenant'] ?? DEFAULT_TENANT),
+    'include-embeddings': flags['include-embeddings'] === true,
+  });
 }
 
 async function runDream(flags: Record<string, string | boolean>): Promise<void> {
@@ -338,76 +343,18 @@ async function runLifecycle(positionals: string[], flags: Record<string, string 
 
   const core = createCoreServices();
   try {
-    const store = new LifecycleStore(core.driver);
-
-    // MEM-006H hebbian pass: drains the feedback ring BEFORE the lifecycle
-    // pass so tonight's usage protects tonight's plan. Behind its own
-    // sub-flag; disabled => the engine is never constructed and the
-    // LifecycleEngine runs the MEM-006 status quo.
-    const hebbianConfig = resolveHebbianConfig();
-    let hebbianResult: HebbianRunResult | undefined;
-    if (hebbianConfig.mode === 'live') {
-      const hebbianEngine = new HebbianEngine({
-        ring: {
-          rpopBatch: async (key, count) => (await core.redis.rpop(key, count)) ?? [],
-          llen: (key) => core.redis.llen(key),
-        },
-        graph: store,
-        config: hebbianConfig,
-        lifecycle: config,
-      });
-      hebbianResult = await hebbianEngine.run({
-        ...(flags['dry-run'] === true ? { dryRun: true } : {}),
-      });
-    }
-
-    const engine = new LifecycleEngine({
-      store,
-      proposals: new ProposalStore(core.redis),
+    const pass = await runLifecyclePass(core, {
       config,
-      ...(hebbianConfig.mode === 'live' ? { hebbian: hebbianConfig } : {}),
-    });
-    const result = await engine.run({
       ...(typeof flags['scope'] === 'string' ? { scope: flags['scope'] as string } : {}),
       ...(flags['dry-run'] === true ? { dryRun: true } : {}),
     });
 
-    // MEM-007 anti-entropy pass: rides the same job AFTER the lifecycle pass,
-    // behind its own sub-flag so the first automated graph writes outside
-    // bootstrap are killable without disabling retention/archive. Disabled
-    // sub-flag => the engine is never constructed (MEM-006 behavior untouched).
-    let antiEntropyResult: AntiEntropyRunResult | undefined;
-    const antiEntropyConfig = resolveAntiEntropyConfig();
-    if (antiEntropyConfig.mode === 'live') {
-      const episodicBuffer = new EpisodicBuffer(core.redis);
-      const antiEntropyEngine = new AntiEntropyEngine({
-        graph: new LifecycleStore(core.driver),
-        streams: {
-          groupHealth: (group) => core.signals.groupHealth(group),
-          removeIdleConsumers: (group, minIdleMs) => core.signals.removeIdleConsumers(group, minIdleMs),
-          bufferLength: () => episodicBuffer.length(),
-        },
-        queue: { size: () => core.queue.size(), peek: (count) => core.queue.peek(count) },
-        extraction: { stats: () => core.extractionQueue.stats() },
-        kv: { mget: (...keys) => core.redis.mget(...keys) },
-        config: antiEntropyConfig,
-        lifecycle: config,
-      });
-      antiEntropyResult = await antiEntropyEngine.run({
-        ...(flags['dry-run'] === true ? { dryRun: true } : {}),
-      });
-    }
-
-    console.log(JSON.stringify({
-      ...result,
-      ...(hebbianResult ? { hebbian: hebbianResult } : {}),
-      ...(antiEntropyResult ? { anti_entropy: antiEntropyResult } : {}),
-    }, null, 2));
+    console.log(JSON.stringify(pass, null, 2));
     // A failed scope/drain/drift class must surface to systemd; successes stay applied.
     if (
-      result.failures.length > 0
-      || (hebbianResult?.failures.length ?? 0) > 0
-      || (antiEntropyResult?.failures.length ?? 0) > 0
+      pass.failures.length > 0
+      || (pass.hebbian?.failures.length ?? 0) > 0
+      || (pass.anti_entropy?.failures.length ?? 0) > 0
     ) {
       process.exitCode = 1;
     }
@@ -562,9 +509,9 @@ async function main(): Promise<void> {
       console.error('  doctor                      (diagnose a MemBerry install)');
       console.error('');
       console.error('Memory snapshot commands:');
-      console.error('  export    [--path ./.memberry] [--entity Name] [--tag tag]');
+      console.error('  export    [--path ./.memberry] [--tenant default] [--entity Name] [--tag tag] [--include-embeddings]');
       console.error('  import    [--path ./.memberry] [--strategy confidence-weighted|overwrite] [--dry-run]');
-      console.error('  snapshot  [--path ./.memberry]   (local export only; never stages or commits files)');
+      console.error('  snapshot  [--path ./.memberry] [--tenant default] [--include-embeddings]   (local export only; never stages or commits files)');
       console.error('');
       console.error('Background memory commands:');
       console.error('  dream      [--scope project:x] [--max-entities N] [--no-cards]');

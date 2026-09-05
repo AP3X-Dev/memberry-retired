@@ -3,7 +3,7 @@
 // intentionally MCP-local: it owns process timers and operational status while
 // the core ConsolidationEngine remains the single authority for proposal policy.
 
-import { readEnv } from '@memberry/core';
+import { parseBoolFlag, readEnv } from '@memberry/core';
 
 export interface ConsolidationRunResult {
   skipped?: boolean;
@@ -74,9 +74,9 @@ export interface ConsolidationCoordinatorOptions {
 
 const coordinators = new Map<string, ConsolidationCoordinator>();
 
+/** Protections (READONLY, CONSOLIDATION_ENABLED) parse loose — see core config/bool-flag.ts. */
 function truthy(raw: string | undefined, fallback: boolean): boolean {
-  if (raw === undefined) return fallback;
-  return ['1', 'true', 'yes', 'on'].includes(raw.trim().toLowerCase());
+  return parseBoolFlag(raw, fallback);
 }
 
 function positiveInt(name: string, fallback: number, minimum = 1): number {

@@ -6,6 +6,7 @@
 import { readFile } from 'node:fs/promises';
 import path from 'node:path';
 import { createNeo4jDriver } from '@memberry/neo4j';
+import { DEFAULT_TENANT } from '@memberry/core';
 import { WikiCompiler } from './compile.js';
 import { initWikiSchema } from './ingest.js';
 import { WikiLinter, formatLintReport } from './lint.js';
@@ -65,6 +66,7 @@ Options:
   --output         Output directory (default: ./wiki)
   --port           Viewer port (default: 3200)
   --project        Project tag for compile/lint/sync (default compile: all)
+  --tenant         Tenant whose memory is compiled/linted (default: default)
   --checks         Comma-separated lint checks to run (default: all)
   --summary-only   lint: print summary counts only (default: full issue detail)
   --file           Edited markdown file to reconcile (sync)
@@ -83,10 +85,11 @@ Options:
     const outputDir = (flags['output'] as string) ?? path.resolve(process.cwd(), 'wiki');
     const port = parseInt((flags['port'] as string) ?? '3200', 10);
     const projectTag = (flags['project'] as string) ?? 'all';
+    const tenantId = (flags['tenant'] as string) ?? DEFAULT_TENANT;
 
     switch (command) {
       case 'compile': {
-        const compiler = new WikiCompiler(driver);
+        const compiler = new WikiCompiler(driver, { tenantId });
         console.error('[wiki-cli] Compiling wiki...');
 
         const result = await compiler.compile(outputDir, projectTag);
@@ -149,7 +152,7 @@ Options:
         const result = await linter.lint({
           project_tag: lintProjectTag,
           checks,
-        });
+        }, tenantId);
         // gap-17: print per-issue detail by default; --summary-only for the
         // terse counts. Shares formatLintReport with the MCP berry_lint handler.
         const summaryOnly = flags['summary-only'] === true;
@@ -159,7 +162,7 @@ Options:
 
       case 'build': {
         // Compile then serve
-        const compiler = new WikiCompiler(driver);
+        const compiler = new WikiCompiler(driver, { tenantId });
         console.error('[wiki-cli] Compiling wiki...');
 
         const result = await compiler.compile(outputDir, projectTag);
