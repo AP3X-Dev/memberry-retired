@@ -294,10 +294,14 @@ describe.skipIf(!ENABLED)('RET-002C2 required authenticated HTTP planner composi
     await callMustFail('berry_context', {
       task: 'denied', project_name: FOREIGN_PROJECT, entity_scope: [FOREIGN_HINT],
     });
-    await callMustFail('berry_ask', {
+    // A foreign entity's alias under the caller's OWN project is, from the caller's side, a hint
+    // that names nothing: the resolver answers entity_not_found (no existence leak), so B-3
+    // degrades it to a task-text ask inside the caller's own project and tenant.
+    await callMustFallBack('berry_ask', {
       question: 'foreign', project_name: SAFE_PROJECT, entity_scope: [FOREIGN_HINT],
     });
-    expect(ordinaryIds.length + tracedIds.length + askIds.length).toBe(afterFallbackCount);
+    expect(askIds.at(-1)).toEqual([]);
+    expect(ordinaryIds.length + tracedIds.length + askIds.length).toBe(afterFallbackCount + 1);
     succeeded = true;
   }, 30_000);
 });
