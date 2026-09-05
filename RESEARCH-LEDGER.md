@@ -703,6 +703,17 @@ and its dominant defect was ranking, not selection — see RL-028.
 ---
 
 ### RL-022 — anchored Entity reachability is poor; agent-weighted impact was not yet observable
+**2026-09-05 B-3 routing call (PRs #161/#162, deployed `5a3b1e8`).** An anchored `berry_context`/`berry_ask`
+whose hint resolves to `entity_not_found` no longer fails: it degrades to the task-text path, in both tools
+and both planner modes, with the value-free note `**Entity scope:** unresolved (entity_not_found); answered
+from task text`; the resolution is still counted as failed. Every other reason and every structural failure
+still throws. The RL-018 pin "still fails loudly" was reversed into "degrades loudly, never silently", which is
+the concern it actually guarded. Live: the resolver probe's 19 failures are now 19 disclosed fallbacks with zero
+errors; the memory gate held. Still open: the hint reaches only the memory scope channel, not the code query
+(an assembler option key hits the pinned scope-key contract), so whether a task-text answer is USEFUL for a
+symbol hint is unmeasured. Two hosted-only harnesses pinned the old behaviour and are not in the container
+gate; that is the general shape of a routing change here.
+
 **2026-09-05 update (loop item 18, PRs #158/#159, deployed `199debc`).** `runtime_query_planner:resolution_failed`
 now carries the resolver's diagnostic as a suffix (`:entity_not_found`, `:project_denied`, and so on; closed set
 `RUNTIME_QUERY_PLANNER_DENIAL_REASONS_V1`). First live reading with reasons: the resolver probe's 19
