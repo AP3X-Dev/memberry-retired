@@ -336,6 +336,7 @@ packages/retrieval/src/__tests__/assembler.multihop.test.ts
 packages/retrieval/src/__tests__/assembler.opt32.test.ts
 packages/retrieval/src/__tests__/assembler.resolved-ids.test.ts
 packages/retrieval/src/__tests__/assembler.test.ts
+packages/retrieval/src/__tests__/assembler.traced.pin.test.ts
 packages/retrieval/src/__tests__/assembler.traced.test.ts
 packages/retrieval/src/__tests__/candidate-channel.test.ts
 packages/retrieval/src/__tests__/code-plane-candidate.test.ts
