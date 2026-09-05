@@ -23,7 +23,7 @@ import type { RetrievalTraceV1 } from '../trace.js';
 import type { UnifiedContext } from '../types.js';
 import type { QueryPlanV1 } from '../query-plan.js';
 import type { ScopedEntityTrustedAuthorityV1 } from '../scoped-entity-resolver.js';
-import { readRuntimeQueryPlannerAuthorityV1 } from '../runtime-query-planner.js';
+import { readRuntimeQueryPlannerAuthorityV1, RuntimeQueryPlannerError, RUNTIME_QUERY_PLANNER_DENIAL_REASONS_V1 } from '../runtime-query-planner.js';
 import { UnifiedAssembler } from '../assembler.js';
 import { createServedRerankerProviderV1 } from '../served-reranker.js';
 
@@ -505,6 +505,42 @@ describe('RET-002C2 authenticated planner wiring', () => {
     })).rejects.toThrowError('runtime_query_planner:resolution_failed');
     expect(assembler.assemble).not.toHaveBeenCalled();
     expect(assembler.renderMarkdown).not.toHaveBeenCalled();
+  });
+
+  it.each([...RUNTIME_QUERY_PLANNER_DENIAL_REASONS_V1])('carries the resolver diagnostic %s as a structured reason on resolution_failed', async (reason) => {
+    const result = { resolution: { state: 'denied', canonicalEntityIds: [] }, diagnostics: [reason] };
+    const { assembler, container } = plannerContainer({ result });
+    const { server, handlers } = makeServerStub();
+    registerRetrievalTools(server as never, container);
+    const failure = await handlers.get('berry_context')!({
+      task: 'blocked', project_name: 'project:memberry', entity_scope: ['Resolver'],
+    }).then(() => null, (error: unknown) => error);
+    expect(failure).toBeInstanceOf(RuntimeQueryPlannerError);
+    expect((failure as RuntimeQueryPlannerError).code).toBe('resolution_failed');
+    expect((failure as RuntimeQueryPlannerError).reason).toBe(reason);
+    expect((failure as Error).message).toBe(`runtime_query_planner:resolution_failed:${reason}`);
+    expect(assembler.assemble).not.toHaveBeenCalled();
+  });
+
+  it('takes the first diagnostic as the reason and drops the reason for an unknown code', async () => {
+    for (const [diagnostics, reason] of [
+      [['entity_ambiguous', 'entity_not_found'], 'entity_ambiguous'],
+      [['made_up_code'], undefined],
+      [['entity_not_found', 'made_up_code'], undefined],
+    ] as const) {
+      const result = { resolution: { state: 'denied', canonicalEntityIds: [] }, diagnostics: [...diagnostics] };
+      const { container } = plannerContainer({ result });
+      const { server, handlers } = makeServerStub();
+      registerRetrievalTools(server as never, container);
+      const failure = await handlers.get('berry_context')!({
+        task: 'blocked', project_name: 'project:memberry', entity_scope: ['Resolver'],
+      }).then(() => null, (error: unknown) => error) as RuntimeQueryPlannerError;
+      expect(failure.code).toBe('resolution_failed');
+      expect(failure.reason).toBe(reason);
+      expect(failure.message).toBe(reason === undefined
+        ? 'runtime_query_planner:resolution_failed'
+        : `runtime_query_planner:resolution_failed:${reason}`);
+    }
   });
 
   it('requires diagnostics to be an exact dense empty data array without hooks or downstream work', async () => {

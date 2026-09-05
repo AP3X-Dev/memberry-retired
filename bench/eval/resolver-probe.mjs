@@ -27,13 +27,13 @@ const client = createClient(process.env.MEMBERRY_BASE_URL || 'http://192.168.0.2
 await client.connect()
 
 const TASK = 'Summarize what is known about this component.'
-const PLANNER_ERROR = /runtime_query_planner:(invalid_request|resolution_failed|authentication_required|unavailable)/
+const PLANNER_ERROR = /runtime_query_planner:(invalid_request|resolution_failed|authentication_required|unavailable)(?::([a-z_]+))?/
 
 // Planner errors arrive as HTTP 200 + isError:true with the code only in the text body
 // (see NON_RETRIEVAL_ERRORS in mcp-client.mjs), so classify from the serialized response.
 const classify = (res) => {
   const match = PLANNER_ERROR.exec(JSON.stringify(res.raw ?? '') + res.text)
-  if (match) return `runtime_query_planner:${match[1]}`
+  if (match) return `runtime_query_planner:${match[1]}${match[2] ? ':' + match[2] : ''}`
   if (res.isError || res.raw?.error) return 'other_failure'
   return 'resolved'
 }
