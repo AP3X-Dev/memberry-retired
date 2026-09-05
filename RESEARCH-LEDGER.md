@@ -703,6 +703,14 @@ and its dominant defect was ranking, not selection — see RL-028.
 ---
 
 ### RL-022 — anchored Entity reachability is poor; agent-weighted impact was not yet observable
+**2026-09-05 update (loop item 18, PRs #158/#159, deployed `199debc`).** `runtime_query_planner:resolution_failed`
+now carries the resolver's diagnostic as a suffix (`:entity_not_found`, `:project_denied`, and so on; closed set
+`RUNTIME_QUERY_PLANNER_DENIAL_REASONS_V1`). First live reading with reasons: the resolver probe's 19
+failures (symbol 0/10, slug 0/4, alias 2/4, dir 12/14, package 9/10) are ALL `entity_not_found`; not one is
+an authority denial. Reachability is a missing-Entity problem, not a policy problem; a symbol-shaped hint should
+route to a code lookup (B-3) rather than fail the planner. Counters are not yet split by reason: the /readyz
+contract pins the resolution key set exactly, so that is a schema-bump packet.
+
 **Evidence:** measured live (2026-08-29) · **Status:** compatibility fix and agent-first measurement prepared; topology repair open · **Opened:** 2026-08-29
 
 The resolver concern flagged by RL-021's handoff is confirmed, but it is two failures rather than
