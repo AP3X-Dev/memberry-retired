@@ -520,6 +520,38 @@ describe('RET-003B runtime candidate channel service', () => {
     expect(filters).not.toContainEqual(expect.objectContaining({ name: 'temporal', outcome: 'pass' }));
   });
 
+  it('emits arch.entity at score 0.5 so a 0.6-confidence Semantic outranks it after fusion', async () => {
+    const probe = driver(validRows());
+    await new RuntimeCandidateChannelService(probe.driver)
+      .execute(await authorityReceipt(), { includeArchitecture: true, includeMemory: false });
+    const archQuery = probe.calls.find(([query]) => query.includes('target.id AS evidenceId'))?.[0] ?? '';
+    expect(archQuery).toContain('0.5 AS score');
+    expect(archQuery).not.toContain('1.0 AS score');
+
+    // Feed the fake driver the score the real Cypher would emit so fusion sees the constant.
+    const archScore = Number(/([\d.]+) AS score/.exec(archQuery)![1]);
+    const rows = validRows();
+    rows.block = [];
+    rows.fact = [];
+    rows.scope = [record(
+      ['tenantId', 'projectScope', 'resolvedEntityId', 'evidenceId', 'title', 'content', 'score'],
+      ['tenant-a', project, entityId, 'semantic-decision', 'Semantic', 'Approved decision', 0.6],
+    )];
+    rows.arch = [record(
+      ['tenantId', 'projectScope', 'resolvedEntityId', 'evidenceId', 'title', 'content', 'score'],
+      ['tenant-a', project, entityId, entityId, 'Entity', 'Architecture entity', archScore],
+    )];
+    const mock = driver(rows);
+    const execution = await new RuntimeCandidateChannelService(mock.driver)
+      .execute(await authorityReceipt(), { includeArchitecture: true, includeMemory: true });
+    const assembler = Object.create(UnifiedAssembler.prototype) as UnifiedAssembler;
+    const items = assembler.assembleCandidateExecution('task', execution, 8_000, true, true).context
+      .sections.flatMap((section) => section.items);
+    const semantic = items.find((item) => item.id === 'semantic-decision')!;
+    const arch = items.find((item) => item.id === entityId)!;
+    expect(semantic.score).toBeGreaterThan(arch.score);
+  });
+
   it('settles a hung source as timeout and closes the session', async () => {
     vi.useFakeTimers();
     try {

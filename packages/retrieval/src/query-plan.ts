@@ -132,7 +132,7 @@ const SAFE_TENANT_ID = /^[A-Za-z0-9][A-Za-z0-9._-]*$/;
 const PROJECT_SCOPE_SHAPE = /^project:[A-Za-z0-9][A-Za-z0-9._-]*$/;
 const CANONICAL_PROJECT_SCOPE = /^project:[a-z0-9][a-z0-9._-]*$/;
 const SAFE_HINT = /^[A-Za-z0-9][A-Za-z0-9._/@:+-]*$/;
-const SAFE_ENTITY_HINT = /^[A-Za-z0-9](?:[A-Za-z0-9._/@:+ -]*[A-Za-z0-9._/@:+-])?$/;
+const SAFE_ENTITY_HINT = /^(?:@?[A-Za-z0-9])(?:[A-Za-z0-9._/@:+ -]*[A-Za-z0-9._/@:+-])?$/;
 const SAFE_ENTITY_ID = /^[A-Za-z0-9][A-Za-z0-9._:-]*$/;
 const RESERVED_AUTHORITY_HINT = /^(?:project|tenant):/i;
 

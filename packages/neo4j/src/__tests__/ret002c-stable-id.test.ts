@@ -207,6 +207,22 @@ describe('RET-002C stable Entity.id consumers', () => {
       .rejects.toThrow(/fact_id_batch_(?:invalid|overflow)/);
   });
 
+  it('bounds the per-entity fetch at the 64 cap so an over-documented entity keeps its top facts and its batch siblings', async () => {
+    const factsFor = (eid: string, count: number) => Array.from({ length: count }, (_, index) => ({ properties: {
+      entity_id: eid, id: `${eid}-fact-${String(index).padStart(3, '0')}`,
+      valid_at: new Date(Date.UTC(2024, 0, 1, 0, 0, count - index)).toISOString(),
+    } }));
+    const stored: Record<string, ReturnType<typeof factsFor>> = { 'entity-a': factsFor('entity-a', 65), 'entity-b': factsFor('entity-b', 2) };
+    const run = vi.fn(async (_cypher: string, params: Record<string, unknown>) => {
+      const perIdFetch = (params.perIdFetch as { toNumber(): number }).toNumber();
+      return { records: (params.ids as string[]).map((eid, ordinal) =>
+        record({ ordinal, eid, facts: stored[eid].slice(0, perIdFetch) })) };
+    });
+    const result = await new FactStore(driverWith(run) as never).getActiveByEntityIdsBatch(['entity-a', 'entity-b']);
+    expect(result.map((facts) => facts.length)).toEqual([64, 2]);
+    expect(result[0].map((fact) => fact.id)).toEqual(stored['entity-a'].slice(0, 64).map((fact) => fact.properties.id));
+  });
+
   it.each([
     ['foreign', { entity_id: 'entity-foreign', id: 'foreign-secret' }],
     ['missing', { id: 'missing-secret' }],

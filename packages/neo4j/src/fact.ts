@@ -338,7 +338,10 @@ export class FactStore {
          WITH ordinal, eid, facts
          ORDER BY ordinal
          RETURN toString(ordinal) AS ordinal, eid, facts`,
-        { ...params, perIdFetch: neo4j.int(FACTS_PER_ENTITY_FETCH) },
+        // Bound the query at the cap so an over-documented entity yields its top facts instead of
+        // failing the whole batch. FACTS_PER_ENTITY_FETCH remains only as the parse-side tolerance
+        // that turns a provider returning more than requested into fact_id_batch_overflow.
+        { ...params, perIdFetch: neo4j.int(FACTS_PER_ENTITY_LIMIT) },
         { timeout: FACT_ID_BATCH_SERVER_TIMEOUT_MS },
       ));
       const records = snapshotFactBatchRecords(result);

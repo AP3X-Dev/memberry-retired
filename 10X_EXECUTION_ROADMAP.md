@@ -50,7 +50,7 @@ else is either design detail or a historical record.
 
 ## Current program position
 
-- **Last updated:** 2026-08-31
+- **Last updated:** 2026-09-01
 - **Exact deployed runtime pin:** `501bc51e27f31baa3ff4af643e8784de1719cf5c` —
   PR #144 (IDX-001B-D graph-native backfill and snapshot privacy), after PR #143
   closed the IDX-001A production stop gate. **The live Cerebro MCP and wiki images
@@ -109,6 +109,56 @@ else is either design detail or a historical record.
   `feat/ret-golden-v2` branch no longer exists.
 
 ## NEXT ACTION
+
+### RET-Q-006 — anchored-path reliability (cycle 1 in review, 2026-09-01)
+
+Owner decisions 2026-09-01: launch RET-Q-006; defer the G2 holdout again (the
+reconciliation below stands, and the item is still owner-gated); deploy master
+`7538337` (PR #146 display-named project scopes plus the custom-tag scope fix) —
+deployed and verified in-box, memory gate two consecutive 34/34 trace-off runs,
+p95 391.9 ms then 377.4 ms, max 29,411 bytes.
+
+Branch `feat/ret-q-006` (PR pending merge) carries three mechanism fixes from
+RESEARCH-LEDGER RL-021, each with a test that fails on the old code, all
+verifier-PASS on Cerebro Node 20 and 22, full gate green on a clean tree
+(workspace 3807 passed, lab 2121/2121, typecheck clean):
+
+1. `arch.entity` candidates scored a hardcoded `1.0`, outranking every approved
+   decision by construction. Now `0.5`.
+2. The batched fact fetch threw on an entity with more than 64 facts and emptied
+   the fact channel for every sibling entity in the batch. Bound at the cap.
+3. npm-scoped package names (`@memberry/core`) were rejected as entity hints
+   before resolution. Accepted, bounded by rejection tests, in both validator
+   copies.
+
+RL-021 item 1c (aggregate cap) was already done on master (384); item 1a was
+narrower than recorded — only the fact channel still cliffed.
+
+Measured this cycle, filed not fixed:
+
+- **Entity resolver live miss rate 38/54 (29.6% resolve).** AGENTS.md entity
+  names 12/12; package directories 2/14 because the live memberry architecture
+  graph (491 descendants, all `project_scope` NULL, zero aliases) was ingested
+  before the scanner derived `packages/*` workspace modules — a re-ingest is the
+  fix, data not code; class names 0/10 because code symbols are never
+  architecture entities — whether `entity_scope` should degrade to code lookup
+  is the RL-018 routing decision, owner's.
+- **Code plane latency 14–30 s per search on Cerebro (P0, infra).** A bare Neo4j
+  `symbol_embedding` vector query takes 2–3 s warm: page cache 256m and heap
+  512m against a 4.4 GB store, on a 4-core host at load 6–10 with ~50 foreign
+  containers. Embedding round-trip is ~1 s; the memory plane (no vector query)
+  stays at p50 ~300 ms. Not a regression of `7538337`. Code-plane probe numbers
+  taken under this condition are not comparable to the 2026-08-28 baselines.
+- `include_trace: true` trips `trace.ts` "reranker stage count disagrees with
+  algorithm" on three mined cases — the concrete repro of the 2026-08-29
+  handoff's "include_trace is broken in production".
+- The code outcome probe now has 38 cases (was 10), which crosses the ~30-case
+  threshold RL-001 set for deciding the BM25F reranker question — once SPR-013
+  makes the numbers trustworthy.
+
+**Owner checkpoints, in order:** merge the PR; deploy; size Neo4j memory on the
+box (pagecache and heap at or above 1g within the container limit); re-ingest the
+memberry architecture; decide symbol-hint routing; then G2.
 
 ### G2 — Explicit owner decision before the sealed RET-010 holdout
 

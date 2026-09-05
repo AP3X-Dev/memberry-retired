@@ -320,11 +320,12 @@ WITH root, target, evidenceId, ep,
      score
 ${COMMON_RETURN}`;
 
+// ponytail: 0.5 so architecture rows stop outranking every approved decision (RL-021 / RL-010)
 const ARCH_QUERY = `${PROJECT_PROOF}
 WITH root, target, target.id AS evidenceId,
      coalesce(target.name, target.id) AS title,
      coalesce(target.responsibility, target.interface_desc, target.name, target.id) AS content,
-     1.0 AS score
+     0.5 AS score
 ${COMMON_RETURN}`;
 
 // A planner receipt carries no working-session authority, so the candidate path may expose only

@@ -686,6 +686,13 @@ export class RankedRuntimeTraceAdapter implements RankedFusionObserver {
         this.collector.recordTerminal(handle, { outcome: 'included', reasons: [] });
       });
     }
+    // A failure swallowed by safe() leaves a ranked-v2 collector without its
+    // reranker stage, and the collector's own finalize then throws the raw
+    // validator string. Keep the public failure value-free, matching the
+    // serializer boundary in tools.ts.
+    if (this.failed) {
+      try { return this.collector.finalize(); } catch { throw new Error('Retrieval trace validation failed'); }
+    }
     return this.collector.finalize();
   }
 
