@@ -57,3 +57,40 @@ Query ids are content hashes of the original call, stable across re-mining.
 - **E1** (11): q-9d3ac34185da, q-ace1aa59a40f, q-2432f7401c2d, q-ed2f9504258d, q-d4d786b9b57e, q-9a3b156bf8d8, q-e65816c792d6, q-e72deed7e6d2, q-9076db8fd3f4, q-6461f53a0f35, q-b76609cb0206
 - **E5** (89): q-84106b9c4b06, q-547d959545f1, q-6c89802166fa, q-285ab6624bdd, q-7df92f69a792, q-0c72e1d0eba6, q-dc02fe5c7b5d, q-b8d26463e7a0, q-b2072bea3256, q-f32dd499dd74, q-f12b5f5fcab9, q-e10141f8e35a, q-5a6882bfe807, q-41d0645e1b67, q-bba2efd81715, q-126d8a242cc7, q-fbbfc3e8fdd1, q-df3fcf9fa7ed, q-3fca3a7f0c91, q-6f9370a28329, q-cf1e887402b6, q-754e1d7d3918, q-b3f65614bfd9, q-382ff0afa351, q-8f0c56cc3134, q-563d7aef9af1, q-5da6aaaf45ee, q-6a82680449b5, q-96df0a3141ca, q-b25682724b85, q-feebd9bd06ef, q-322e734bfe36, q-2bb6e765d631, q-e1b12c136da6, q-8ffb6ab6768f, q-7ca713ba7736, q-b1491d9c246b, q-123aa46f1e7f, q-77c9fe919151, q-a13b3103facd, q-ce1cad3b3c3c, q-50741a554822, q-3af1df57dcbb, q-43e371f9ebd3, q-08849e6d0887, q-dffc78bb6f40, q-e5132a4b6a91, q-d219bcbbb524, q-42d9c8f585ef, q-1ab9a4ec698e, q-294026a04467, q-330a7b3ca2e4, q-1e837068fd6d, q-0297ec12ad19, q-261faf086c92, q-0387acef7ee0, q-39f86976e9a0, q-1d6434493e9b, q-ec7a46c3aa15, q-604c4eb5ffcf, q-a3b23341073b, q-90d0541bc969, q-15269864a096, q-a17c255b7835, q-8f81af44a0ba, q-37c24755c8ee, q-067b59363893, q-aa689b3eee23, q-f2b868ec82ed, q-7153b436f4f0, q-f1e30bcf8e68, q-cd5152950887, q-a2bd2b2b23a2, q-a7e35b90ad14, q-c31c829ca43d, q-1f0c86199222, q-8bafd491f0e4, q-5f126f3ca555, q-cbd8d35dbd54, q-661d7478a368, q-75af8c902480, q-f50c3944bf9d, q-59967f9479a8, q-5eeb30eacbb7, q-7aa6dd926d4e, q-6c7f81175d5f, q-ab0f1ab68911, q-834a3defced1, q-d983dcdeb25b
 - **E6** (1): q-a0d0aa4d5a86
+
+## 2026-09-04 — om-06..om-17: twelve berry_load cases from real memberry agent traffic
+
+Source: `bench/eval/mined-queries.jsonl`, the 38 unused `project:memberry` memory-plane calls.
+Twelve were adjudicated READ-ONLY against the live graph with `berry_grep` on the exact
+identifiers each question names (commit SHAs, packet ids, an episode id); the matched node ids are
+the expected evidence and the grep pattern is cited in each case's `sourceOfTruth`. Inputs are the
+mined `berry_load` arguments verbatim (tags/entities as the agent sent them), so two cases
+(om-13, om-16) are unanchored real calls with no entities. Not adjudicated: queries whose named
+identifier has no node in the graph (e.g. `f98d2076`, RET-010D) and open-ended "select the next
+packet" prompts with no single defensible answer.
+
+Instrument change in the same commit: the probe's evidence-id extractor only matched the
+`<!-- id -->` comments that berry_context/berry_ask emit; berry_load renders `## [id]` headers, so
+every berry_load case scored MISS with an empty top-5. Both forms are now extracted. The probe also
+stops injecting `project_name` into berry_load/berry_grep inputs, which those tools do not accept.
+
+Live baseline BEFORE any ranking change (deployed `7538337`, trace off, 2026-09-04):
+
+| case | plane | rank |
+|---|---|---|
+| om-06 | episodic | MISS |
+| om-07 | episodic | MISS |
+| om-08 | semantic | 4 |
+| om-09 | semantic | MISS |
+| om-10 | episodic | MISS |
+| om-11 | semantic | MISS |
+| om-12 | semantic | 8 |
+| om-13 | semantic | MISS |
+| om-14 | semantic | MISS |
+| om-15 | semantic | MISS |
+| om-16 | semantic | MISS |
+| om-17 | semantic | MISS |
+
+Twelve real berry_load calls: 1 answered in the top five, 2 in the top ten. Memory-only aggregate
+over all 46 cases: Answer@1 0.3043, Answer@5 0.7174, Answer@10 0.7391, MRR 0.4462, zero errors.
+om-01 and rq-e-09 were also MISS on this run and are not part of the twelve.
