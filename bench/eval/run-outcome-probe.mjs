@@ -24,7 +24,9 @@ import { readFileSync } from 'node:fs'
 import { createClient } from './mcp-client.mjs'
 
 const TEST_PATH = /__tests__|\.test\.|\.spec\./
-const EVIDENCE_ID = /<!--\s+([^\s>]+)\s+-->/g
+// berry_context/berry_ask mark evidence with `<!-- id -->`; berry_load renders
+// `## [id] (...)` headers. Both are delivered order, so both count.
+const EVIDENCE_ID = /<!--\s+([^\s>]+)\s+-->|^##\s+\[([^\]\s]+)\]/gm
 
 function parseArgs(argv) {
   const args = {
@@ -90,7 +92,8 @@ for (const c of cases) {
     : {
         ...(c.input ?? {}),
         [queryField]: c.question,
-        ...(c.input?.project_name === undefined ? { project_name: args.project } : {}),
+        ...(c.input?.project_name === undefined && tool !== 'berry_load' && tool !== 'berry_grep'
+          ? { project_name: args.project } : {}),
         ...(args.traceMode === 'off' ? { include_trace: false } : {}),
         ...(args.traceMode === 'on' ? { include_trace: true } : {}),
         ...(args.traceMode === 'summary' ? { include_trace: true, trace_detail: 'summary' } : {}),
@@ -138,7 +141,7 @@ for (const c of cases) {
     const evidenceIds = []
     const seen = new Set()
     for (const match of res.text.matchAll(EVIDENCE_ID)) {
-      const id = match[1]
+      const id = match[1] ?? match[2]
       if (!seen.has(id)) {
         seen.add(id)
         evidenceIds.push(id)
