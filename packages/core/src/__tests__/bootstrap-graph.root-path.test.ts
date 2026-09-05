@@ -42,6 +42,24 @@ describe('BootstrapGraphService mergeEntity root_path', () => {
     expect(params.rootPath).toBe('/w/app');
   });
 
+  it('unions aliases into e.aliases from a parameter, never inlining them into the query', async () => {
+    const { run, session, merge } = makeService();
+    await merge(session, { name: 'core', type: 'module', aliases: ['@memberry/core', 'core', ' '] }, result());
+    const [query, params] = run.mock.calls[0] as unknown as [string, Record<string, unknown>];
+    expect(query).toContain('e.aliases = coalesce(e.aliases, []) + [alias IN $aliases WHERE NOT alias IN coalesce(e.aliases, [])]');
+    expect(query).not.toContain('@memberry/core');
+    // The entity's own name and blank strings are not aliases.
+    expect(params.aliases).toEqual(['@memberry/core']);
+  });
+
+  it('emits no aliases clause or param when the entity has none', async () => {
+    const { run, session, merge } = makeService();
+    await merge(session, { name: 'mod', type: 'module', aliases: [] }, result());
+    const [query, params] = run.mock.calls[0] as unknown as [string, Record<string, unknown>];
+    expect(query).not.toContain('e.aliases');
+    expect(params).not.toHaveProperty('aliases');
+  });
+
   it('emits no root_path clause or param when the entity has none', async () => {
     const { run, session, merge } = makeService();
     await merge(session, { name: 'mod', type: 'module' }, result());

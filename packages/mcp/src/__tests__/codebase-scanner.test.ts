@@ -92,6 +92,8 @@ describe('scanCodebase', () => {
     expect(coreModule!.type).toBe('module');
     expect(coreModule!.parent).toBe('test-project');
     expect(coreModule!.relPath).toBe('packages/core');
+    // The npm package name rides along as an alias so `@test/core` resolves too.
+    expect(coreModule!.aliases).toEqual(['@test/core']);
   });
 
   it('discovers src subdirectories as components', async () => {

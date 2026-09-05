@@ -30,6 +30,13 @@ export interface DiscoveredModule {
    * `core` module the scanner named here, not the `packages` workspace root.
    */
   relPath?: string;
+  /**
+   * Additional retrieval names for the module. A workspace package whose
+   * package.json name differs from its directory (e.g. `@memberry/core` in
+   * `packages/core`) carries the npm name here so an agent hint naming the
+   * package resolves to the same Entity as the directory name.
+   */
+  aliases?: string[];
 }
 
 export interface CodebaseScan {
@@ -276,6 +283,7 @@ async function discoverModules(
       description: desc,
       parent: metadata.name,
       relPath: toRelPath(rootPath, modulePath),
+      ...(packageName !== moduleName ? { aliases: [packageName] } : {}),
     });
   }
 
