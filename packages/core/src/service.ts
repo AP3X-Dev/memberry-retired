@@ -17,7 +17,7 @@ import type {
   MemoryBlock,
   AuditSink,
 } from './types.js';
-import { rankMemories, rankFacts, budgetTokens, estimateTokens } from './ranking.js';
+import { rankMemories, rankNormalizeRelevance, rankFacts, budgetTokens, estimateTokens } from './ranking.js';
 import type { RedisBlockLayer, Neo4jBlockLayer } from './blocks.js';
 import { MemoryBlockService } from './blocks.js';
 import { extractFacts, isTransientError } from './extract.js';
@@ -493,6 +493,11 @@ export class AMPService {
         observedFactsPromise,
       ] as const);
     }
+
+    // Slice 5 / MEMBERRY_MEMORY_RANK_V2: rank-normalise each vector channel's cosine
+    // scores before they become relevanceScore (see ranking.ts for the measurement).
+    byVector = rankNormalizeRelevance(byVector);
+    byVectorEpisodic = rankNormalizeRelevance(byVectorEpisodic);
 
     // Process blocks: filter empties, truncate to tier budget
     let coreBlocks: MemoryBlock[] = [];
