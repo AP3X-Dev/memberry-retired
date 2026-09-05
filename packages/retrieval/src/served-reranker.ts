@@ -528,8 +528,20 @@ export async function applyServedRerankerV1(
         }
       }
       if (rerankedHead >= 10) {
-        const pinnedResult = ownedResults[rerankedHead]!;
-        const pinnedApplication = applications[rerankedHead]!;
+        // The sealed ranked-v2 trace derives presentation order from calibrated
+        // scores (collector and validator both sort score desc, then baseline
+        // rank asc), so a pin is served as a score override to the current
+        // head: baseline rank 1 wins the tie and the trace stays representable.
+        // Live repro 2026-09-04: without this, include_trace failed on every
+        // request where the pin fired.
+        const headScore = applications[0]!.calibratedScore;
+        const demoted = applications[rerankedHead]!;
+        const pinnedResult = nullRecord({ ...demoted.result, score: headScore }) as unknown as RetrievalResult;
+        const pinnedApplication = nullRecord({
+          baselineResult: demoted.baselineResult,
+          result: pinnedResult,
+          calibratedScore: headScore,
+        });
         for (let index = rerankedHead; index > 0; index -= 1) {
           defineArrayItem(ownedResults, index, ownedResults[index - 1]!);
           defineArrayItem(applications, index, applications[index - 1]!);

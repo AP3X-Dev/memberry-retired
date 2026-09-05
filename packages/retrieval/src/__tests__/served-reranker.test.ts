@@ -117,6 +117,11 @@ describe('RET-010B frozen served reranker', () => {
     ]);
     if (guarded.outcome !== 'reranked') throw new Error('expected reranked outcome');
     expect(guarded.candidates.map((candidate) => candidate.result.id)).toEqual(ids(guarded));
+    // The pin is served as a calibrated-score override to the head so the
+    // ranked-v2 trace can represent the served order.
+    expect(guarded.results[0]!.score).toBe(1);
+    expect(guarded.candidates[0]!.calibratedScore).toBe(1);
+    expect(guarded.results[1]!.score).toBe(1);
   });
 
   it('RET-Q-004 leaves an architecture head inside the reranked top ten under lexical control', async () => {
