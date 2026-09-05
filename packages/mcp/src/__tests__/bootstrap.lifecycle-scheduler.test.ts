@@ -69,6 +69,17 @@ describe('startLifecycleScheduler', () => {
     handle.stop();
   });
 
+  it('a thrown errno error is reported by its code, which is fixed and actionable', async () => {
+    const log = vi.fn();
+    const failure = Object.assign(new Error("EACCES: permission denied, mkdir '.amp/lifecycle'"), { code: 'EACCES' });
+    const handle = startLifecycleScheduler({ run: vi.fn().mockRejectedValue(failure), intervalMs: 3_600_000, log });
+    await vi.advanceTimersByTimeAsync(5 * 60_000);
+    expect(log).toHaveBeenCalledWith('[lifecycle] pass failed: EACCES');
+    expect(handle.status()).toMatchObject({ last_result: 'failed', last_error_class: 'EACCES' });
+    expect(JSON.stringify(handle.status())).not.toContain('.amp');
+    handle.stop();
+  });
+
   it('stop() clears both timers so nothing runs afterwards', async () => {
     const run = vi.fn(async () => summary());
     const handle = startLifecycleScheduler({ run, intervalMs: HOUR, log: () => {} });

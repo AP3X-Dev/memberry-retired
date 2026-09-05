@@ -122,6 +122,11 @@ services:
       MEMBERRY_CODE_RERANK_V1: ${MEMBERRY_CODE_RERANK_V1:-}
       # Phase 3 lifecycle engines: disabled | live.
       MEMBERRY_LIFECYCLE_V1: ${MEMBERRY_LIFECYCLE_V1:-disabled}
+      # Writable export root. defaultExportPath() resolves ./.amp relative to the
+      # CWD, which is the root-owned /app inside the image, so without these the
+      # in-process lifecycle pass fails EACCES on every scope (seen live 2026-09-04).
+      MEMBERRY_EXPORT_PATH: ${MEMBERRY_EXPORT_PATH:-/app/exports}
+      MEMBERRY_LIFECYCLE_EXPORT_DIR: ${MEMBERRY_LIFECYCLE_EXPORT_DIR:-/app/exports}
       MEMBERRY_LIFECYCLE_ANTIENTROPY: ${MEMBERRY_LIFECYCLE_ANTIENTROPY:-disabled}
       MEMBERRY_LIFECYCLE_HEBBIAN: ${MEMBERRY_LIFECYCLE_HEBBIAN:-disabled}
       MEMBERRY_EMBEDDING_DIM: ${MEMBERRY_EMBEDDING_DIM:-}
@@ -166,6 +171,8 @@ services:
       # ingest / compile, confined to /workspace via MEMBERRY_INGEST_ALLOW_DIR.
       # Override the host path with MEMBERRY_WORKSPACE_HOST_PATH (default: ./).
       - ${MEMBERRY_WORKSPACE_HOST_PATH:-./}:/workspace:ro
+      # Persistent, memberry-owned (chown in the Dockerfile) export root.
+      - exports:/app/exports
       # gap-15 (T10): shared wiki output volume. MCP WRITES compiled markdown here
       # (when MEMBERRY_WIKI_AUTOREFRESH is on); the wiki service mounts the SAME
       # named volume at /app/wiki and serves/watches it. Read-write here (MCP is
@@ -244,6 +251,7 @@ volumes:
   neo4j_data:
   neo4j_plugins:
   redis_data:
+  exports:
   # gap-15 (T10): shared between the mcp (writer on refresh) and wiki (writer at
   # startup + reader/watcher) services so MCP-side recompiles surface in the
   # served wiki. Only materializes when the wiki profile (and optionally the app

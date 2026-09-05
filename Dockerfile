@@ -62,7 +62,9 @@ COPY --chown=memberry:memberry --from=builder /app/packages ./packages
 # non-root runtime user. A fresh named volume mounted at /app/wiki (the gap-15
 # shared wiki_output volume) inherits the image dir's ownership on first init,
 # so the wiki/mcp processes can write to it without an EACCES.
-RUN mkdir -p /app/wiki && chown memberry:memberry /app/wiki
+# /app is root-owned; the server runs as memberry. Exports (berry_export and the
+# lifecycle export-before-mutate artifacts) need a directory it can write.
+RUN mkdir -p /app/wiki /app/exports && chown memberry:memberry /app/wiki /app/exports
 USER memberry
 
 EXPOSE 3101

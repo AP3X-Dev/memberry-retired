@@ -227,8 +227,12 @@ export function startLifecycleScheduler(deps: LifecycleSchedulerDeps): { stop():
         ...(pass.anti_entropy ? { anti_entropy: { ...pass.anti_entropy.extraction, failures: pass.anti_entropy.failures.length } } : {}),
       };
     } catch (err) {
-      // Class only: a lifecycle error message can carry scope names/ids.
-      const errorClass = err instanceof Error ? err.constructor.name : typeof err;
+      // Class only: a lifecycle error message can carry scope names/ids. A Node
+      // errno code (EACCES, ENOSPC) is a fixed string and far more actionable
+      // than the bare constructor name, so prefer it when present.
+      const errorClass = err instanceof Error
+        ? ((err as NodeJS.ErrnoException).code ?? err.constructor.name)
+        : typeof err;
       log(`[lifecycle] pass failed: ${errorClass}`);
       status = { mode: 'live', last_run_at: startedAt, last_result: 'failed', last_error_class: errorClass };
     } finally {
@@ -922,6 +926,14 @@ export async function bootstrap(): Promise<BootstrapHandles> {
   // MEM-006 retention/archive pass, in-process, behind the existing flag.
   // Flag not live => nothing is constructed (CLI/systemd path unchanged).
   const lifecycleConfig = resolveLifecycleConfig(defaultExportPath());
+  if (lifecycleConfig.mode === 'live') {
+    // Fail loud at boot, not once per scope per pass: the export root must be writable.
+    try { fs.mkdirSync(path.join(lifecycleConfig.exportDir, 'lifecycle'), { recursive: true }); }
+    catch (err) {
+      const code = (err as NodeJS.ErrnoException).code ?? 'unknown';
+      console.error(`[memberry-mcp] WARNING: lifecycle export dir is not writable (${code}); every lifecycle pass will fail until MEMBERRY_LIFECYCLE_EXPORT_DIR points at a writable directory`);
+    }
+  }
   const lifecycleScheduler = lifecycleConfig.mode === 'live'
     ? startLifecycleScheduler({
         run: () => runLifecyclePass(core, { config: lifecycleConfig }),
