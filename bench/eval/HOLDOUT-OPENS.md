@@ -133,8 +133,11 @@ are not measurements of anything. Delete nothing; real entries are appended belo
 |---|---|---|---|---|---|---|---|---|---|---|
 
 | 1 | 2026-08-27 | `a1439fb` (deployed `3eba9a9`, code-identical) | **origin baseline** | 0.1000 (— / —) | 0.3000 (— / —) | 0.0000 (— / —) | 0.0000 (— / —) | 0 | 0 | origin pinned in `BASELINE.md` §2.6 |
+| 2 | 2026-09-05 | `f1afe29` (deployed `037247c`, code-identical) | **origin 2 re-pin** (§3.2 conditions 1+2: re-index of project:memberry 2026-09-04; flags #118/#119/#123 and RL-018 #130) | 0.2000 (— / —) | 0.2000 (— / —) | 0.0000 (— / —) | 0.0000 (— / —) | 0 | 0 | origin 2 pinned in `BASELINE.md` §2.6; origin 1 retained in §6 |
 
-**Opened once: the origin baseline, 2026-08-27.**
+**Opened twice: the origin baseline, 2026-08-27; the origin-2 re-pin, 2026-09-05.**
+
+**Entry 2 notes.** A re-pin is itself an origin, so both delta columns read `—` again; no delta crosses the origin boundary. Attempt 1 of this open aborted on a client 30 s timeout during a consolidation burst on the box and yielded no numbers; the retry after the burst is the recorded run (`BASELINE.md` §2.5). Rate rule: this open is ACTED ON by the pin itself, so the holdout may be reopened for the next change.
 
 **Entry 1 notes.** The origin open is the one open that has no prior and no origin to compare
 against — it *is* the origin, so both delta columns read `—`.

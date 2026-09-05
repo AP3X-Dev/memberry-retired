@@ -80,3 +80,6 @@ SETUP_GAPS.md
 
 # Local deployment compose backups (server-specific, not for publication)
 docker-compose.yml.*
+
+# EVAL-001 run artifacts (per-run, regenerated; holdout is aggregate-only)
+bench/eval/last-run*.json

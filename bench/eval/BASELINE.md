@@ -33,6 +33,322 @@ from the latest run. This file is the analogous mechanism for EVAL-001.
 
 ---
 
+## 2. ORIGIN BASELINE RECORD — origin 2, pinned 2026-09-05
+
+Origin 1 (2026-08-27, `a1439fb`) is retained verbatim in §6. It was superseded because §3.2
+conditions 1 and 2 both fired after it was pinned: three retrieval flags shipped (§2.7 of origin 1),
+RL-018 changed which questions are answerable (§7, 2026-08-29), and `project:memberry` was
+deliberately re-ingested on 2026-09-04 (slice 2 / B-2: 16,399 → 20,197 symbols). The re-pin was
+owed since 2026-08-28 and is taken now as a deliberate act, not in response to any number.
+
+### 2.0 Run identity
+
+| field | value |
+|---|---|
+| date/time of run | 2026-09-05, America/Los_Angeles (dev first, holdout second; holdout is the second attempt — see §2.5) |
+| who ran it | slice-3 session (state file `docs/agent-runs/slices-2026-09-04.md`) |
+| host the runner executed from | Windows workstation (network MCP client; the SERVER is cerebro) |
+| MCP endpoint (`--base`) | `http://192.168.0.25:3101` |
+
+### 2.1 Code identity
+
+| field | value |
+|---|---|
+| repo `master` at time of run | `f1afe29` |
+| commit DEPLOYED on the box | `037247c` (`git -C /home/cerebro/projects/memberry rev-parse HEAD`) |
+| `git diff --stat 037247c..f1afe29 -- packages/ src/` | **EMPTY** — docs-only delta (#154), deployed code == master code |
+
+### 2.2 Flag state at origin 2 — read in-container at run time
+
+Command: `ssh cerebro@192.168.0.25 "docker exec memberry-mcp env | grep -E '^MEMBERRY_' | sort"`.
+Verbatim, retrieval-governing subset (the two `ADMISSION_SHADOW_*` tunables and
+`LIFECYCLE_EXPORT_DIR` omitted as non-ranking):
+
+```
+MEMBERRY_ADMISSION_FEATURE_PRODUCER_V1=live
+MEMBERRY_ADMISSION_ROUTING_V1=shadow
+MEMBERRY_CANDIDATE_CHANNEL_V1=1
+MEMBERRY_CODE_RERANK_V1=1
+MEMBERRY_CODE_SCOPE_V2=1
+MEMBERRY_KIND_RANK_V1=1
+MEMBERRY_LIFECYCLE_ANTIENTROPY=live
+MEMBERRY_LIFECYCLE_HEBBIAN=live
+MEMBERRY_LIFECYCLE_V1=live
+MEMBERRY_QUERY_PLANNER_V1=1
+MEMBERRY_RERANKER_V1=served
+```
+
+The three `LIFECYCLE_*` lines now come from the repo's `docker-compose.yml` via the box `.env`,
+so the origin-1 reproducibility hazard no longer applies. `KIND_RANK_V1` is sourced only from the
+box `.env` (compose passes `${MEMBERRY_KIND_RANK_V1:-}`), so a checkout without that `.env` line
+runs kind-aware ranking OFF and will not reproduce this origin.
+
+### 2.3 Index state at the moment of the run
+
+Captured 2026-09-05 between the dev and holdout runs with `cypher-shell` inside `memberry-neo4j`.
+Re-index since origin 1: **yes** — `berry_ingest_codebase /workspace/memberry` on 2026-09-04
+(slice 2 / B-2) and again after #153 deployed (2026-09-05 05:55 UTC).
+
+| `project_tag` | Symbol count |
+|---|---|
+| `project:memberry` | 20,197 (origin 1: 16,399) |
+| `project:hermes-agent` | 15,055 |
+| `project:neuri` | 12,339 |
+| `project:ag3ntic` | 5,385 |
+| NULL | 5,136 |
+
+`project:memberry` kind histogram:
+
+| kind | count |
+|---|---|
+| `variable` | 13,672 |
+| `function` | 4,236 |
+| `interface` | 935 |
+| `method` | 756 |
+| `type` | 369 |
+| `class` | 201 |
+| `module` | 28 |
+
+| property | value |
+|---|---|
+| test-file symbols (`file_path` matches `__tests__`, `.test.`, `.spec.`) | 10,083 (**49.9%**) |
+| bare-variable (kind `variable`, empty `doc_comment`) | 12,482 (**61.8%**) |
+
+Queries: `MATCH (s:Symbol) RETURN coalesce(s.project_tag,"NULL"), count(*)`;
+`MATCH (s:Symbol {project_tag:"project:memberry"}) RETURN s.kind, count(*)`; the two shares are
+`sum(CASE WHEN … THEN 1 ELSE 0 END)` over the same match, on `s.file_path` and on
+`s.kind="variable" AND coalesce(s.doc_comment,"")=""`. The Symbol property is `file_path`, not
+`file`; a first attempt on `s.file` returned 0.0% and was discarded.
+
+### 2.4 Question set state
+
+| field | value |
+|---|---|
+| question file | `bench/eval/eval001-questions.jsonl`, unchanged since origin 1 |
+| SHA-256 at run time | `4417d4a912755ee77c16b63f453bb5baae70b68dc28bb61d8ee89cdb0990e70d` |
+| selection rule in force | `SELECTION-RULE.md` incl. A1, A2, A4 — no re-selection |
+| `dev` split | 4 authored, **4 scored** (origin 1 scored 3: `eval001-d-08` is answerable after RL-018) |
+| `holdout` split | 5 |
+
+### 2.5 How the run was invoked
+
+```
+node bench/eval/run-eval001.mjs --split dev                                          # → bench/eval/last-run.json
+node bench/eval/run-eval001.mjs --split holdout --out bench/eval/last-run-holdout.json
+```
+
+| field | value |
+|---|---|
+| runner SHA-256 | `95f46e5e35e103e91d47ac5094db15826b1a1b1de1fbf4b6696da10a823933ec` |
+| node version | v20.18.2 |
+| session line | `EVAL001 session codeDomainEnabled=true codeToolsVisible=7` (both splits) |
+| holdout attempt 1 | **aborted, no numbers**: `DOMException [TimeoutError]` from the client's 30 s `AbortSignal` on one call while `memberry-mcp` was inside a consolidation burst (80 lifecycle/consolidation log lines in the preceding 15 min). Retried once after the burst with the box idle (mcp 0.35% CPU). No question result from attempt 1 was observed or retained. |
+
+### 2.6 THE ORIGIN-2 NUMBERS
+
+Metric definitions unchanged from origin 1 (§6, its "2.6"). `noiseRate` remains retired.
+
+**`dev` split (n = 4 authored, 4 scored):**
+
+| metric | origin-2 value |
+|---|---|
+| `keywordRecall@5` | **0.0625** |
+| `keywordRecall@10` | **0.1250** |
+| `testFileRate@5` | **0.3000** |
+| `testFileRate@10` | **0.3750** |
+| `nonRetrieval` | **0** |
+| `grammarMisses` | **0** |
+
+**`holdout` split (n = 5) — AGGREGATE ONLY:**
+
+| metric | origin-2 value |
+|---|---|
+| `keywordRecall@5` | **0.2000** |
+| `keywordRecall@10` | **0.2000** |
+| `testFileRate@5` | **0.0000** |
+| `testFileRate@10` | **0.0000** |
+| `nonRetrieval` | **0** |
+| `grammarMisses` | **0** |
+
+Verbatim `EVAL001 …` lines, both splits:
+
+```
+EVAL001 session codeDomainEnabled=true codeToolsVisible=7
+EVAL001 split=dev n=4 keywordRecall5=0.0625 keywordRecall10=0.1250
+EVAL001 split=dev testFileRate5=0.3000 testFileRate10=0.3750
+EVAL001 split=dev grammarMisses=0 nonRetrieval=0 flags=QUERY_PLANNER_V1,CANDIDATE_CHANNEL_V1,RERANKER_V1
+EVAL001 split=dev question=eval001-d-07 keywordRecall5=0.0000 testFileRate5=0.8000 missing=assembler.ts|UnifiedAssembler|AssemblerCodeLayer|CodeSearch
+EVAL001 split=dev question=eval001-d-08 keywordRecall5=0.2500 testFileRate5=0.4000 missing=UnifiedAssembler|rrfFusion|fusion.ts
+EVAL001 split=dev question=eval001-d-11 keywordRecall5=0.0000 testFileRate5=0.0000 missing=evidence-authority-ledger.ts|linkSignal|CONTRADICTS|EvidenceAuthorityCoverage
+EVAL001 split=dev question=eval001-d-25 keywordRecall5=0.0000 testFileRate5=0.0000 missing=hibernated|computerStatus.ts
+
+EVAL001 session codeDomainEnabled=true codeToolsVisible=7
+EVAL001 split=holdout n=5 keywordRecall5=0.2000 keywordRecall10=0.2000
+EVAL001 split=holdout testFileRate5=0.0000 testFileRate10=0.0000
+EVAL001 split=holdout grammarMisses=0 nonRetrieval=0 flags=QUERY_PLANNER_V1,CANDIDATE_CHANNEL_V1,RERANKER_V1
+```
+
+**Read against origin 1 for context only — deltas do not cross an origin boundary (§5 item 4).**
+Dev `testFileRate@5` 0.1333 → 0.3000, with `eval001-d-07` at 0.8000: four of its top five are
+test files, on an index that is 49.9% test-file symbols. Dev `keywordRecall` is flat at n = 4 and
+dominated by two questions (`d-11`, `d-25`) that miss every keyword; those are the same misses as
+origin 1. Holdout `keywordRecall@10` moved 0.3000 → 0.2000 and `@5` 0.1000 → 0.2000; at n = 5
+that is one question moving, a smoke signal, not a trend.
+
+The sibling probe (§8) taken the same day against the same deploy reads memory-only Answer@5
+0.5323 over 62 cases (`SELECTION-LOG.md` 2026-09-05) and code-plane Answer@5 0.8421 over 38
+(2026-09-04). Those are not EVAL-001 numbers.
+
+---
+
+## 3. How every later comparison is reported
+
+**Two numbers, always. Never one.** Every comparison reports drift against BOTH:
+
+1. **the immediately-prior accepted state** — the previous accepted row in section 7, and
+2. **the origin baseline** — section 2.6, which never moves.
+
+A row reporting only one of the two is incomplete, and the change it supports is not
+accepted. This is the mechanism, not the aspiration: a "did not regress" measured only
+against the prior step cannot detect accumulated decline, because each individual step is
+genuinely within noise.
+
+Per split, per metric, the row carries:
+
+```
+keywordRecall@5   this=TBD   Δ vs prior=TBD   Δ vs ORIGIN=TBD
+testFileRate@5    this=TBD   Δ vs prior=TBD   Δ vs ORIGIN=TBD
+```
+
+### 3.1 The monotonic-decline flag
+
+**A monotonic decline across three or more consecutive accepted runs is FLAGGED, even when
+no single step regressed.** That is the boiling-frog case, and it is the specific thing this
+file exists to catch.
+
+Flagging means the run is recorded with a `FLAG: monotonic decline over N runs` line in
+section 7, and the next change touching that metric must either address the drift or justify
+it in writing. A flag is a recorded event, not a veto — but clearing it silently is not
+available.
+
+Evaluate the flag per metric, per split, over the accepted rows only.
+
+### 3.2 What voids comparison entirely
+
+From SELECTION-RULE §9. Each of these makes results uncomparable and requires a **fresh
+baseline**, not a delta:
+
+1. A re-index, which changes the corpus underneath (spec §8 item 4).
+2. A change to any flag in §2.2.
+3. Re-selecting the question set by any rule other than `SELECTION-RULE.md`.
+4. Discovery that the mined population is not what §3 of that rule claims — for example,
+   transcript coverage turning out to be partial in a way that correlates with query
+   difficulty.
+
+Also voiding, from the metric side: a nonzero `grammarMisses`, which means the render
+diverged from the pinned grammar and `testFileRate` is known-invalid for that run.
+
+---
+
+## 4. What these numbers do NOT describe — declared bias
+
+These caveats travel with every EVAL-001 number. A report quoting a metric from this file
+without them is overclaiming.
+
+**Deliberate code-plane over-sampling (SELECTION-RULE §5.1).** By raw frequency the mined
+population is 87% memory-plane; a proportional sample would have yielded roughly two code
+questions. Because the primary diagnosed defect is a code-plane defect, the rule takes
+**every** surviving code-plane and mixed query and then fills to target from memory. This is
+a bias, chosen on an *a priori* ground — where the known defect lives — and not on any
+measured outcome. **`keywordRecall` on this set does not describe MemBerry's average
+traffic, and no report may claim that it does.**
+
+**Single-client transcript source (SELECTION-RULE §10).** The population is Claude Code on
+one Windows workstation. Codex, Neuri, and Hermes agents also query MemBerry; their logs live
+elsewhere and were not mined. The set over-represents one client's phrasing and one client's
+tool-selection habits. Mining a second client's logs is the obvious fix and was out of scope
+for this pass.
+
+**Foreign-client scopes excluded (SELECTION-RULE amendment A1, ground E5).** 89 memory-plane
+queries scoped to non-MemBerry projects were excluded, because this repo is public and the
+question file is tracked — and redaction was rejected on the ground that the client name *is*
+the retrieval signal, so a redacted query is no longer the real query. E5 removed **zero**
+code-plane and **zero** mixed-plane queries. The consequence is that this set measures
+retrieval on *MemBerry-and-siblings development traffic*, not the workstation's whole query
+load.
+
+**Small n (spec §8 item 1).** The surviving set is sized for signal on obvious defects, not
+statistical power. A small delta is not detectable and must not be claimed as one.
+
+**Keyword presence is a proxy for usefulness (spec §8 item 2).** A response can contain every
+required keyword and still be badly ordered or padded. `testFileRate` partly covers this;
+nothing fully does.
+
+**Author bias (spec §8 item 3).** Whoever authored the keywords decided what "good" means.
+Blind authoring (SELECTION-RULE §7) constrains this; it does not remove it.
+
+**A retrieval claim only (spec §2.4).** No answer quality, task completion, latency, or cost
+is measured. A `keywordRecall` gain is a retrieval claim and must not be reported as anything
+else.
+
+---
+
+## 5. Re-pinning the origin — the ONLY permitted procedure
+
+**Amended 2026-08-28 (owner).** This section previously permitted re-pinning on a deliberate
+re-index alone, while §3.2 listed FOUR conditions that void comparison and said each "requires a
+fresh baseline, not a delta". Those two statements contradicted each other: three flags shipping
+after the origin (§2.7) voided comparison under §3.2 item 2 and simultaneously forbade the only
+documented way to restore it, leaving EVAL-001 runnable but unable to compare anything — most of
+what a regression guard is for. The permitted triggers are now the §3.2 list, so the two sections
+agree.
+
+The origin baseline is re-pinned **only when comparison has been voided by one of the four
+conditions in §3.2**:
+
+1. a deliberate re-index (the corpus changed underneath — spec §8 item 4);
+2. a change to any flag governing the measured path;
+3. re-selecting the question set by any rule other than `SELECTION-RULE.md`;
+4. discovery that the mined population is not what SELECTION-RULE §3 claims.
+
+Nothing else re-pins it — not a run that looks anomalous, not a metric that has drifted, not a
+change of opinion about the question set that does not go through the selection rule, and **never**
+as a way to clear a monotonic-decline flag. Widening the trigger list does not widen the ceremony:
+every re-pin still retains the prior origin verbatim, still records its reason, and still appears
+in §6 so the count stays visible. **A re-pin is never a way to escape a number** — if a re-pin and
+an unwelcome result ever coincide, the burden is on the re-pinner to show the voiding condition
+existed independently of the result.
+
+When one of those conditions occurs:
+
+1. **Retain the prior origin. It is never deleted.** Move section 2 verbatim into section 6
+   under a heading `Superseded origin N — <date>`. Not edited, not summarised, not trimmed.
+2. Record the **reason** in that heading — which of the four conditions fired, and the evidence
+   for it (the re-index performed, or the flag and the PR that shipped it, and so on).
+3. Write a **new** section 2 with new SHAs, new flag state, new index state, and a new run.
+   The new origin is a fresh capture, not an adjustment of the old one.
+4. Note in section 7 the exact row after which comparison switches to the new origin.
+   **Deltas do not cross an origin boundary:** a run under origin N+1 is never compared to
+   origin N's numbers.
+5. Every re-pinning is itself an entry in section 6, so the count of re-pinnings is visible.
+   Frequent re-pinning is a smell, and the record makes it one.
+
+---
+
+## 6. Superseded origins — retained forever
+
+### Superseded origin 1 — 2026-09-05
+
+**Reason (§3.2 / §5):** condition 2 — flags governing the measured path changed after the pin
+(`MEMBERRY_KIND_RANK_V1` #118, `MEMBERRY_CODE_SCOPE_V2` #119, `MEMBERRY_CODE_RERANK_V1` #123, and
+the RL-018 behaviour change, PR #130); and condition 1 — a deliberate re-index of `project:memberry`
+on 2026-09-04 (slice 2 / B-2, 16,399 → 20,197 symbols). Both conditions existed independently of
+any result; the re-pin had been declared owed in §2.7 since 2026-08-28. Origin-1 numbers were:
+dev kwRecall@5 0.0833 / @10 0.0833, testFileRate@5 0.1333 / @10 0.2000, nonRetrieval 1;
+holdout kwRecall@5 0.1000 / @10 0.3000, testFileRate 0.0000 / 0.0000.
+
+Section 2 as it stood, verbatim:
+
 ## 2. ORIGIN BASELINE RECORD — write once, never overwrite
 
 ### 2.0 Run identity
@@ -294,146 +610,6 @@ baseline.
 
 ---
 
-## 3. How every later comparison is reported
-
-**Two numbers, always. Never one.** Every comparison reports drift against BOTH:
-
-1. **the immediately-prior accepted state** — the previous accepted row in section 7, and
-2. **the origin baseline** — section 2.6, which never moves.
-
-A row reporting only one of the two is incomplete, and the change it supports is not
-accepted. This is the mechanism, not the aspiration: a "did not regress" measured only
-against the prior step cannot detect accumulated decline, because each individual step is
-genuinely within noise.
-
-Per split, per metric, the row carries:
-
-```
-keywordRecall@5   this=TBD   Δ vs prior=TBD   Δ vs ORIGIN=TBD
-testFileRate@5    this=TBD   Δ vs prior=TBD   Δ vs ORIGIN=TBD
-```
-
-### 3.1 The monotonic-decline flag
-
-**A monotonic decline across three or more consecutive accepted runs is FLAGGED, even when
-no single step regressed.** That is the boiling-frog case, and it is the specific thing this
-file exists to catch.
-
-Flagging means the run is recorded with a `FLAG: monotonic decline over N runs` line in
-section 7, and the next change touching that metric must either address the drift or justify
-it in writing. A flag is a recorded event, not a veto — but clearing it silently is not
-available.
-
-Evaluate the flag per metric, per split, over the accepted rows only.
-
-### 3.2 What voids comparison entirely
-
-From SELECTION-RULE §9. Each of these makes results uncomparable and requires a **fresh
-baseline**, not a delta:
-
-1. A re-index, which changes the corpus underneath (spec §8 item 4).
-2. A change to any flag in §2.2.
-3. Re-selecting the question set by any rule other than `SELECTION-RULE.md`.
-4. Discovery that the mined population is not what §3 of that rule claims — for example,
-   transcript coverage turning out to be partial in a way that correlates with query
-   difficulty.
-
-Also voiding, from the metric side: a nonzero `grammarMisses`, which means the render
-diverged from the pinned grammar and `testFileRate` is known-invalid for that run.
-
----
-
-## 4. What these numbers do NOT describe — declared bias
-
-These caveats travel with every EVAL-001 number. A report quoting a metric from this file
-without them is overclaiming.
-
-**Deliberate code-plane over-sampling (SELECTION-RULE §5.1).** By raw frequency the mined
-population is 87% memory-plane; a proportional sample would have yielded roughly two code
-questions. Because the primary diagnosed defect is a code-plane defect, the rule takes
-**every** surviving code-plane and mixed query and then fills to target from memory. This is
-a bias, chosen on an *a priori* ground — where the known defect lives — and not on any
-measured outcome. **`keywordRecall` on this set does not describe MemBerry's average
-traffic, and no report may claim that it does.**
-
-**Single-client transcript source (SELECTION-RULE §10).** The population is Claude Code on
-one Windows workstation. Codex, Neuri, and Hermes agents also query MemBerry; their logs live
-elsewhere and were not mined. The set over-represents one client's phrasing and one client's
-tool-selection habits. Mining a second client's logs is the obvious fix and was out of scope
-for this pass.
-
-**Foreign-client scopes excluded (SELECTION-RULE amendment A1, ground E5).** 89 memory-plane
-queries scoped to non-MemBerry projects were excluded, because this repo is public and the
-question file is tracked — and redaction was rejected on the ground that the client name *is*
-the retrieval signal, so a redacted query is no longer the real query. E5 removed **zero**
-code-plane and **zero** mixed-plane queries. The consequence is that this set measures
-retrieval on *MemBerry-and-siblings development traffic*, not the workstation's whole query
-load.
-
-**Small n (spec §8 item 1).** The surviving set is sized for signal on obvious defects, not
-statistical power. A small delta is not detectable and must not be claimed as one.
-
-**Keyword presence is a proxy for usefulness (spec §8 item 2).** A response can contain every
-required keyword and still be badly ordered or padded. `testFileRate` partly covers this;
-nothing fully does.
-
-**Author bias (spec §8 item 3).** Whoever authored the keywords decided what "good" means.
-Blind authoring (SELECTION-RULE §7) constrains this; it does not remove it.
-
-**A retrieval claim only (spec §2.4).** No answer quality, task completion, latency, or cost
-is measured. A `keywordRecall` gain is a retrieval claim and must not be reported as anything
-else.
-
----
-
-## 5. Re-pinning the origin — the ONLY permitted procedure
-
-**Amended 2026-08-28 (owner).** This section previously permitted re-pinning on a deliberate
-re-index alone, while §3.2 listed FOUR conditions that void comparison and said each "requires a
-fresh baseline, not a delta". Those two statements contradicted each other: three flags shipping
-after the origin (§2.7) voided comparison under §3.2 item 2 and simultaneously forbade the only
-documented way to restore it, leaving EVAL-001 runnable but unable to compare anything — most of
-what a regression guard is for. The permitted triggers are now the §3.2 list, so the two sections
-agree.
-
-The origin baseline is re-pinned **only when comparison has been voided by one of the four
-conditions in §3.2**:
-
-1. a deliberate re-index (the corpus changed underneath — spec §8 item 4);
-2. a change to any flag governing the measured path;
-3. re-selecting the question set by any rule other than `SELECTION-RULE.md`;
-4. discovery that the mined population is not what SELECTION-RULE §3 claims.
-
-Nothing else re-pins it — not a run that looks anomalous, not a metric that has drifted, not a
-change of opinion about the question set that does not go through the selection rule, and **never**
-as a way to clear a monotonic-decline flag. Widening the trigger list does not widen the ceremony:
-every re-pin still retains the prior origin verbatim, still records its reason, and still appears
-in §6 so the count stays visible. **A re-pin is never a way to escape a number** — if a re-pin and
-an unwelcome result ever coincide, the burden is on the re-pinner to show the voiding condition
-existed independently of the result.
-
-When one of those conditions occurs:
-
-1. **Retain the prior origin. It is never deleted.** Move section 2 verbatim into section 6
-   under a heading `Superseded origin N — <date>`. Not edited, not summarised, not trimmed.
-2. Record the **reason** in that heading — which of the four conditions fired, and the evidence
-   for it (the re-index performed, or the flag and the PR that shipped it, and so on).
-3. Write a **new** section 2 with new SHAs, new flag state, new index state, and a new run.
-   The new origin is a fresh capture, not an adjustment of the old one.
-4. Note in section 7 the exact row after which comparison switches to the new origin.
-   **Deltas do not cross an origin boundary:** a run under origin N+1 is never compared to
-   origin N's numbers.
-5. Every re-pinning is itself an entry in section 6, so the count of re-pinnings is visible.
-   Frequent re-pinning is a smell, and the record makes it one.
-
----
-
-## 6. Superseded origins — retained forever
-
-None. The origin in section 2 is the first, and it stands unsuperseded.
-
----
-
 ## 7. Run log — APPEND ONLY
 
 ### 2026-08-28 — dev split, post-deploy. NOT a re-pin, and NOT comparable to the origin.
@@ -508,6 +684,7 @@ counts, the flag state if it differs from §2.2, and the accept/reject verdict.
 
 | date | SHA | split | change tested | kwRecall@5 (Δprior / Δorigin) | kwRecall@10 (Δprior / Δorigin) | testFileRate@5 (Δprior / Δorigin) | testFileRate@10 (Δprior / Δorigin) | nonRetrieval | grammarMisses | verdict |
 |---|---|---|---|---|---|---|---|---|---|---|
+| 2026-09-05 | `f1afe29` (deployed `037247c`, code-identical) | dev + holdout | **origin 2 pinned** (re-pin per §5; §2 rewritten, origin 1 in §6) | dev 0.0625 · holdout 0.2000 (— / —) | dev 0.1250 · holdout 0.2000 (— / —) | dev 0.3000 · holdout 0.0000 (— / —) | dev 0.3750 · holdout 0.0000 (— / —) | 0 | 0 | origin 2 pinned; comparison switches to origin 2 AFTER this row |
 
 *The origin baseline is recorded in section 2.6 and as entry 1 of
 [`HOLDOUT-OPENS.md`](HOLDOUT-OPENS.md) section 5. No post-origin run has been appended here
