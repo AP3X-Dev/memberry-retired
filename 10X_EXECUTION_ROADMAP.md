@@ -50,7 +50,7 @@ else is either design detail or a historical record.
 
 ## Current program position
 
-- **Last updated:** 2026-09-01
+- **Last updated:** 2026-09-04
 - **Exact deployed runtime pin:** `501bc51e27f31baa3ff4af643e8784de1719cf5c` —
   PR #144 (IDX-001B-D graph-native backfill and snapshot privacy), after PR #143
   closed the IDX-001A production stop gate. **The live Cerebro MCP and wiki images
@@ -110,7 +110,55 @@ else is either design detail or a historical record.
 
 ## NEXT ACTION
 
-### RET-Q-006 — anchored-path reliability (cycle 1 in review, 2026-09-01)
+### 2026-09-04 — deployed `febbad0`; the ten-slice program is the active lane
+
+Owner decisions 2026-09-04: merge PR #148 (`opt/memberry-hardening`, the Phase 5
+hardening loop: tenant fail-closed paths, datastore/lifecycle readiness probes,
+Cypher allowlists, one flag parser, 99-flag inventory, lint/format/test-manifest
+floors, `LIMITATIONS.md`), PR #149 (ranked-v2 trace stays representable when the
+RET-Q-004 pin fires) and PR #150 (twelve real `berry_load` outcome cases plus a
+`berry_load`-aware probe), then deploy.
+
+**Exact deployed runtime pin is now `febbad0d0800191cf0b397919cc1c0261123a780`**
+(image `sha256:6257c234729a08d28eda39e151e53c708eb61a03ade468737d6a80b5fb540355`,
+rollback tag `memberry:rollback-slices-7538337b-20260904`). Verify:
+`ssh cerebro@192.168.0.25 "git -C /home/cerebro/projects/memberry rev-parse --short HEAD"`
+→ `febbad0d`. Post-deploy: the 46-case memory gate (trace off) ran twice,
+bit-identical to the pre-deploy baseline — Answer@5 0.7174, MRR 0.4462, zero
+errors, p95 349.0 ms, max response 29,371 bytes. `include_trace` full is repaired
+in production: rq-s-03 / rq-e-05 / rq-f-03 return complete traces at ranks 2 / 1 / 5
+(all three errored before). `/readyz` now carries datastore, embedding, lifecycle
+and collection-size state; the in-process lifecycle scheduler is live for the first
+time and its first `last_result` is owed.
+
+**The 34/34 gate is superseded as the headline number.** Twelve real `berry_load`
+calls answer 1 of 12 in the top five and 2 of 12 in the top ten
+(`bench/eval/SELECTION-LOG.md`, 2026-09-04). That is the un-saturated signal the
+next retrieval slices are measured against. The memory-only aggregate over all 46
+cases is the regression guard: Answer@5 0.7174 / MRR 0.4462 must not drop.
+
+Open slices, in order (state file: private `docs/agent-runs/slices-2026-09-04.md`):
+
+1. Hardening loop tail — items 16–19, 20b, 21–33 (small, file:line anchored).
+2. **Owner:** B-1 Neo4j page cache/heap ≥ 1 GB and container limit on Cerebro,
+   then B-2 re-ingest the memberry architecture. Unblocks every code-plane number.
+3. Finish the instrument: ~13 more adjudicated memory cases; re-baseline EVAL-001.
+4. Query-aware anchored candidate selection (RL-021) — the first retrieval change
+   the new cases can measure.
+5. Resolver aliases at ingest plus structured denial reasons (loop item 18).
+6. BM25F decision and the RL-002 flag split, after B-1.
+7. **Owner:** dead-index deletions (RL-008, RL-012, RL-013).
+8. Break the core/neo4j type cycle so the image runs `dist`, not `tsx`.
+
+Production-readiness decisions the owner must make before any release claim:
+define the supported flag surface and delete the losing arms; pick the tenancy
+model (single-tenant-per-deployment or fund SEC-005..009); set SLOs and run the
+backup-restore and rolling-upgrade drills (OPS-002/005/008); close the two
+documented exposures (all-interfaces bind, unauthenticated wiki listener); run one
+task-level comparison against a no-MemBerry control.
+
+
+### RET-Q-006 — anchored-path reliability (cycle 1 MERGED as PR #147 `8d4e0fe`, 2026-09-03; historical)
 
 Owner decisions 2026-09-01: launch RET-Q-006; defer the G2 holdout again (the
 reconciliation below stands, and the item is still owner-gated); deploy master
